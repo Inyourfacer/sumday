@@ -2,7 +2,7 @@
 
 Each phase ends with something usable. See [DESIGN.md](DESIGN.md) for the details.
 
-## Phase 0: Foundations
+## Phase 0: Foundations ✅
 - Scaffold TypeScript + React + Vite UI, a Fastify server and SQLite
   (better-sqlite3) with a migration runner.
 - Vitest, oxlint and typecheck. GitHub Actions run lint, test and build on
