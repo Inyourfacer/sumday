@@ -32,6 +32,28 @@ There are no sign-up, multi-tenant or billing features. Both adults see
 everything. Each account has an **owner** (adult A, adult B or joint), because
 retirement accounts, contribution limits and Social Security are per person.
 
+### 2.1 Household setup (in the app)
+
+Nothing about the household is hard-coded. A **first-run setup wizard**
+collects it, and a **Settings → Household** page edits it at any time:
+
+- **People:** 1 or 2 adults. Each has a name, birth date, target retirement
+  age, earned income and expected raise, Social Security estimates at 62 / FRA
+  / 70, planned claim age, and any pension (start age, monthly amount, COLA
+  yes/no).
+- **Household:** filing status, state, number of dependents, HSA coverage
+  (self / family / none), inflation assumption, planning horizon.
+- **Employer plans (per person):** plan type (401k / 403b / 457), match formula
+  as a list of tiers (e.g. "100% of the first 3%, 50% of the next 2%"),
+  vesting note, payroll contribution % (pre-tax and Roth), HSA payroll
+  contribution.
+
+Every field has a sensible default, and the wizard can be skipped. Anything
+left blank shows up as a "finish setup" item on the dashboard. The engines
+that need a missing value (e.g. the match step without a match formula) are
+skipped and say why. Changing a setting reruns the affected engines
+immediately.
+
 ## 3. Data model (core entities)
 
 | Entity | Key fields |
@@ -43,7 +65,7 @@ retirement accounts, contribution limits and Social Security are per person.
 | **Category** | name, group, budget type (**Fixed / Flex / Non-monthly / Income / Transfer / Savings**) |
 | **Rule** | match (payee contains/regex, amount range, account), action (set category, rename payee, mark transfer), priority |
 | **Holding** | account, security, shares, cost basis lots (date, shares, cost) |
-| **Security** | ticker, name, asset class mix (e.g. 100% US stock, or a blend for target-date funds), expense ratio |
+| **Security** | ticker (optional), proxy ticker (optional), name, asset class mix (e.g. 100% US stock, or a blend for target-date funds), expense ratio |
 | **Price** | security, date, close |
 | **Balance snapshot** | account, date, balance (for accounts tracked by balance only, and for net worth history) |
 | **Goal** | name, target amount, target date, priority, linked account(s) and earmarked amount |
@@ -69,8 +91,11 @@ file ──► detect format ──► parse (per-institution adapter) ──►
 ```
 
 - **Adapters:** `Importer { id, detect(file): boolean, parse(file): RawRow[] }`.
-  One generic CSV adapter with saved column mappings per account, one OFX/QFX
-  adapter, and specific adapters for your banks as needed.
+  v1 ships two adapters that cover any institution: a **generic CSV** adapter
+  and an **OFX/QFX** adapter. The CSV adapter has a column-mapping screen
+  (date, amount or debit/credit, payee, memo, sign convention, date format)
+  that is saved per account and reused on every import. Adapters for specific
+  institutions are deferred; the interface leaves room for them.
 - **Dedupe:** use the OFX `FITID` when present. Otherwise use a key of
   account + date + amount + normalized payee + occurrence index within that day.
   Overlapping date ranges in repeat imports are safe.
@@ -243,9 +268,17 @@ All thresholds are editable in Plan settings.
 
 - **Holdings** come from brokerage CSV imports or manual entry, with **cost
   basis lots** where available.
-- **Prices:** a `PriceProvider` interface. The default provider uses a free-key
-  API (**Tiingo** or **Alpha Vantage**; see Open questions), and manual price
-  entry is the fallback. A daily job fetches closes for held tickers only.
+- **Prices:** a `PriceProvider` interface. The default provider is **Tiingo**
+  (free API key). It has end-of-day prices for US stocks, ETFs and mutual funds,
+  adjusted for splits and dividends, and a free tier large enough for a daily
+  refresh of every held ticker. Alpha Vantage's free tier (about 25
+  requests/day) is too small. A daily job fetches closes for held tickers
+  only and backfills any days the machine was off. Free-tier limits are checked
+  again at build time.
+- **Funds without a ticker** (common in 401k plans): a security can have a
+  **proxy ticker**, and Sumday applies the proxy's daily % change to the
+  last known price. Each import that includes a real price resets it.
+  Manual price entry is the final fallback.
 - **Asset classes:** US stock, international stock, bonds, cash, real estate,
   other. A security can be a blend (e.g. a target-date fund = 54% US stock /
   36% intl / 10% bonds). Common funds get default mappings, and you can
@@ -387,14 +420,14 @@ sumday/
 
 ## 15. Open questions
 
-1. **Household profile:** ages, filing status, state, one or two earners,
-   employer match formulas, any pensions. These set the defaults.
-2. **Institutions:** which banks, card issuers and brokerages you'll import
-   from. These decide the first adapters.
-3. **Price provider:** Tiingo or Alpha Vantage for the default (both have free
-   keys; check current free-tier limits at build time).
-4. **Returns dataset:** confirm the source and that its terms allow bundling it
+1. **Returns dataset:** confirm the source and that its terms allow bundling it
    in a personal repo.
-5. **Automated imports:** which pipeline to build first (watched folder, email
+2. **Automated imports:** which pipeline to build first (watched folder, email
    inbox, or something else). The pipeline is already designed to accept any
    of them.
+3. **Institution-specific adapters:** paused. Generic CSV and OFX cover v1.
+
+Decided:
+
+- Household profile is entered in the app (Section 2.1), not in config.
+- Price provider: Tiingo by default (Section 10).

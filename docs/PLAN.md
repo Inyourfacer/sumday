@@ -13,10 +13,13 @@ Each phase ends with something usable. See [DESIGN.md](DESIGN.md) for the detail
 **Done when:** `npm start` opens an empty Sumday dashboard and CI is green.
 
 ## Phase 1: Accounts + import
-- People, household settings and accounts (all types, owners, tax treatment).
+- First-run setup wizard and the Settings → Household page: people, household,
+  employer plans with match tiers, pensions and Social Security estimates.
+- Accounts (all types, owners, tax treatment).
 - Manual transactions and balance snapshots.
-- Import pipeline: format detection, generic CSV with saved column mappings,
-  OFX/QFX, dedupe, a staging review screen, and undo for whole batches.
+- Import pipeline: format detection, generic CSV with a column-mapping screen
+  saved per account, OFX/QFX, dedupe, a staging review screen, and undo for
+  whole batches.
 - Categories, payee normalization, rules, learning from corrections, and the
   Uncategorized inbox.
 - Transfer pair detection.
@@ -46,8 +49,9 @@ and why.
 ## Phase 4: Investments
 - Holdings import (positions + cost basis lots), securities with asset-class
   mixes and expense ratios.
-- `PriceProvider` interface, the default free-key provider, manual prices, and
-  a daily price job.
+- `PriceProvider` interface, the Tiingo provider (free key in `.env`), proxy
+  tickers for funds with no ticker, manual prices, and a daily price job with
+  backfill.
 - Allocation (household/account/person), target and drift band, rebalancing
   suggestions, asset location hints, fee drag and XIRR.
 
@@ -81,7 +85,7 @@ it was calculated.
 ## Later
 - Automated import pipeline (watched folder or email inbox → the same staging
   review).
-- Institution-specific adapters as needed.
+- Institution-specific adapters (paused).
 - Bracket-based `TaxModel`, Roth conversion planning and tax-optimized
   withdrawal order.
 - Parametric returns as an alternative Monte Carlo mode.
