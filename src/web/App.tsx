@@ -2,6 +2,9 @@ import { useCallback, useEffect, type ReactNode } from "react";
 import type { HealthResponse, SummaryResponse } from "../shared/api.ts";
 import { useApi, useDataChanged } from "./api.ts";
 import { AccountDetailPage, AccountsPage } from "./pages/Accounts.tsx";
+import { BudgetPage } from "./pages/Budget.tsx";
+import { CashFlowPage } from "./pages/CashFlow.tsx";
+import { RecurringPage } from "./pages/Recurring.tsx";
 import { CategoriesPage } from "./pages/Categories.tsx";
 import { DashboardPage } from "./pages/Dashboard.tsx";
 import { ImportPage } from "./pages/Import.tsx";
@@ -45,6 +48,9 @@ function route(path: string, summary: SummaryResponse | undefined): ReactNode {
   if (path === "/accounts") return <AccountsPage />;
   if ((m = matchPath("/accounts/:id", path))) return <AccountDetailPage key={m.id} id={Number(m.id)} />;
   if (path === "/transactions") return <TransactionsPage />;
+  if (path === "/budget") return <BudgetPage />;
+  if (path === "/cashflow") return <CashFlowPage />;
+  if (path === "/recurring") return <RecurringPage />;
   if (path === "/import") return <ImportPage />;
   if ((m = matchPath("/import/:id", path))) return <ImportReviewPage key={m.id} id={Number(m.id)} />;
   if (path === "/settings/household") return <SettingsHouseholdPage />;
@@ -79,7 +85,9 @@ export function App() {
     { to: "/accounts", label: "Accounts" },
     { to: "/transactions", label: "Transactions", badge: s?.uncategorizedCount },
     { to: "/import", label: "Import", badge: s?.stagedImportCount },
-    { to: "/budget", label: "Budget", phase: 2 },
+    { to: "/budget", label: "Budget" },
+    { to: "/cashflow", label: "Cash flow" },
+    { to: "/recurring", label: "Recurring" },
     { to: "/goals", label: "Goals", phase: 3 },
     { to: "/debt", label: "Debt", phase: 3 },
     { to: "/investments", label: "Investments", phase: 4 },

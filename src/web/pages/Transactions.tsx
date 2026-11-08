@@ -24,8 +24,8 @@ function TransactionsView({ query }: { query: URLSearchParams }) {
   const [category, setCategory] = useState(query.get("uncategorized") === "true" ? "none" : (query.get("categoryId") ?? ""));
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [from, setFrom] = useState(query.get("from") ?? "");
+  const [to, setTo] = useState(query.get("to") ?? "");
   const [limit, setLimit] = useState(PAGE);
   const [open, setOpen] = useState<TransactionView>();
   const [adding, setAdding] = useState(false);

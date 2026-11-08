@@ -135,11 +135,11 @@ describe("budget", () => {
 describe("cash flow and trends", () => {
   it("totals each month and averages the complete ones", async () => {
     const cf = await ok<CashFlowResponse>("GET", "/api/cashflow?months=6");
-    expect(cf.months).toHaveLength(6);
+    // Months before the first transaction are left out.
+    expect(cf.months).toHaveLength(4);
     expect(cf.months.at(-1)!.month).toBe(thisMonth);
     const last = cf.months.at(-2)!;
     expect(last).toMatchObject({ income: 500_000, fixed: 201_549, flex: 30_000, movedToSavings: 50_000 });
-    // Months before any data don't drag the averages down.
     expect(cf.averages.income).toBe(500_000);
     expect(cf.averages.spending).toBe(Math.round((231_549 * 3 + 60_000) / 3));
     expect(cf.averages.movedToSavings).toBe(50_000);
@@ -163,7 +163,8 @@ describe("recurring", () => {
     const names = r.series.map((s) => `${s.payee}:${s.frequency}`).sort();
     expect(names).toEqual(["ACME PAYROLL:monthly", "Landlord:monthly", "Netflix.com:monthly", "To savings:monthly", "Trader Joe's:monthly"]);
     const netflix = r.series.find((s) => s.payee === "Netflix.com")!;
-    expect(netflix).toMatchObject({ accountName: "Card", categoryName: "Subscriptions", amount: -1_549, active: true, ignored: false });
+    expect(netflix).toMatchObject({ accountName: "Card", categoryName: "Subscriptions", amount: -1_549, active: true, ignored: false, isTransfer: false });
+    expect(r.series.find((s) => s.payee === "To savings")?.isTransfer).toBe(true);
     expect(r.upcoming.some((u) => u.payee === "Netflix.com")).toBe(true);
 
     r = await ok<RecurringResponse>("POST", "/api/recurring/ignore", { key: netflix.key });

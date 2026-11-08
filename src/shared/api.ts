@@ -51,13 +51,15 @@ export interface TrendsResponse {
 export interface RecurringView extends RecurringSeries {
   accountName: string;
   categoryName: string | null;
+  /** Money moving between your own accounts (card payments, savings). Not a bill. */
+  isTransfer: boolean;
   ignored: boolean;
 }
 
 export interface RecurringResponse {
   series: RecurringView[];
   /** Expected charges and deposits over the next 45 days (active, not ignored). */
-  upcoming: (UpcomingItem & { accountName: string; categoryName: string | null })[];
+  upcoming: (UpcomingItem & { accountName: string; categoryName: string | null; isTransfer: boolean })[];
   today: string;
 }
 

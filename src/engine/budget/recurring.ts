@@ -7,7 +7,7 @@ import { payeeKey } from "../categorize/payee.ts";
 import { addDays, addMonths, addYears, daysBetween, type IsoDate } from "../dates.ts";
 import type { Cents } from "../money.ts";
 
-export type Frequency = "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
+export type Frequency = "weekly" | "biweekly" | "semimonthly" | "monthly" | "quarterly" | "yearly";
 
 export interface RecurringInput {
   id: number;
@@ -32,6 +32,8 @@ export interface RecurringSeries {
   amountVaries: boolean;
   occurrences: number;
   firstDate: IsoDate;
+  /** The occurrence before the last one (twice-monthly series repeat it a month later). */
+  previousDate: IsoDate;
   lastDate: IsoDate;
   nextDate: IsoDate;
   /** Still happening: the next expected date isn't long overdue. */
@@ -44,6 +46,8 @@ export interface RecurringSeries {
 const BANDS: { frequency: Frequency; min: number; max: number; days: number; minCount: number }[] = [
   { frequency: "weekly", min: 5, max: 9, days: 7, minCount: 3 },
   { frequency: "biweekly", min: 12, max: 16, days: 14, minCount: 3 },
+  // Twice a month on fixed days (the 1st and 15th): gaps alternate 13–17 days.
+  { frequency: "semimonthly", min: 12, max: 19, days: 15, minCount: 4 },
   { frequency: "monthly", min: 26, max: 35, days: 30, minCount: 3 },
   { frequency: "quarterly", min: 84, max: 98, days: 91, minCount: 3 },
   // A yearly charge is worth flagging after it happens twice.
@@ -60,8 +64,12 @@ function within10(amounts: readonly Cents[], center: Cents): boolean {
   return amounts.every((a) => Math.abs(a - center) <= Math.abs(center) * 0.1);
 }
 
-function nextAfter(date: IsoDate, frequency: Frequency): IsoDate {
+/** The occurrence after `last`. Twice-monthly series repeat `previous` one month on. */
+function nextAfter(last: IsoDate, frequency: Frequency, previous: IsoDate = last): IsoDate {
+  const date = last;
   switch (frequency) {
+    case "semimonthly":
+      return addMonths(previous, 1);
     case "weekly":
       return addDays(date, 7);
     case "biweekly":
@@ -130,7 +138,8 @@ export function detectRecurring(rows: readonly RecurringInput[], today: IsoDate)
       const amounts = candidate.map((r) => r.amount);
       const amount = median(amounts);
       const last = candidate.at(-1)!;
-      const nextDate = nextAfter(last.date, band.frequency);
+      const previousDate = candidate.at(-2)?.date ?? last.date;
+      const nextDate = nextAfter(last.date, band.frequency, previousDate);
       series.push({
         key: `${groupKey}|${band.frequency}`,
         payee: mostCommon(candidate.map((r) => r.payee)),
@@ -142,6 +151,7 @@ export function detectRecurring(rows: readonly RecurringInput[], today: IsoDate)
         amountVaries: !within10(amounts, amount),
         occurrences: candidate.length,
         firstDate: candidate[0]!.date,
+        previousDate,
         lastDate: last.date,
         nextDate,
         // Overdue by more than half a period means it probably stopped.
@@ -170,8 +180,9 @@ export function upcoming(series: readonly RecurringSeries[], from: IsoDate, to: 
   const items: UpcomingItem[] = [];
   for (const s of series) {
     if (!s.active) continue;
-    for (let date = s.nextDate, n = 0; date <= to && n < 60; date = nextAfter(date, s.frequency), n++) {
-      if (date < from) continue;
+    let previous = s.lastDate;
+    for (let date = s.nextDate, n = 0; date <= to && n < 60; n++) {
+      if (date >= from) {
       items.push({
         key: s.key,
         date,
@@ -182,6 +193,10 @@ export function upcoming(series: readonly RecurringSeries[], from: IsoDate, to: 
         categoryId: s.categoryId,
         frequency: s.frequency,
       });
+      }
+      const next = nextAfter(date, s.frequency, previous);
+      previous = date;
+      date = next;
     }
   }
   return items.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.payee.localeCompare(b.payee)));

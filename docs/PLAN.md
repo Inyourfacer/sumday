@@ -27,7 +27,7 @@ Each phase ends with something usable. See [DESIGN.md](DESIGN.md) for the detail
 **Done when:** a few months of real transactions from your accounts are
 imported, categorized and deduplicated.
 
-## Phase 2: Spending, budget, net worth
+## Phase 2: Spending, budget, net worth ✅
 - Fixed / Flex / Non-monthly budgets, with sinking funds for non-monthly items.
 - Monthly budget view, trends, cash flow and savings rate.
 - Recurring detection and the bills calendar.

@@ -13,6 +13,7 @@ import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { Amount, Empty, ErrorNote, Field, Loading, Modal, MoneyInput, NumberInput, PageHeader } from "../components/ui.tsx";
 import { formatDate, plural, todayLocal } from "../format.ts";
 import { Link } from "../router.tsx";
+import { NetWorthPanel } from "../components/NetWorthPanel.tsx";
 import { navigate } from "../navigation.ts";
 
 const GROUPS: { title: string; types: AccountType[] }[] = [
@@ -198,6 +199,7 @@ export function AccountsPage() {
           </div>
         </div>
       )}
+      {list.length > 0 && <NetWorthPanel />}
       {GROUPS.map((group) => {
         const inGroup = list.filter((a) => group.types.includes(a.type));
         if (inGroup.length === 0) return null;

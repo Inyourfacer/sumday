@@ -148,15 +148,31 @@ savings (planned vs actual).
 ### 5.2 Other spending features
 
 - **Recurring detection:** a payee charged ≥ 3 times at a regular interval
-  (weekly, monthly or yearly, ± 3 days) with an amount within ± 10% becomes a
-  proposed recurring item. This drives the bills calendar and the
-  new-subscription alert.
+  (weekly, every 2 weeks, twice a month, monthly, quarterly; yearly after 2)
+  with an amount within ± 10% becomes a recurring item. Bills whose amount
+  varies (utilities) still count when the timing is regular, and are marked
+  "about". A regular charge hidden among irregular ones from the same payee
+  (a subscription from a store you also shop at) is found by grouping similar
+  amounts. A series overdue by more than half a period is shown as stopped.
+  You can mark any series "not recurring". This drives the bills calendar and
+  the new-subscription alert. Transfers (card payments, savings moves) appear
+  on the calendar but don't count as bills, since the card's own charges
+  already do.
 - **Trends:** spending by category and group over 12 months, and average
   monthly spending by category.
-- **Cash flow & savings rate:** savings rate = (income − spending) ÷ income,
-  and also as (contributions to savings/investing) ÷ gross income.
-- **Net worth:** assets − liabilities over time, from transactions, balance
-  snapshots and holding values.
+- **Cash flow & savings rate:** savings rate = (income − spending) ÷ income.
+  "Moved to savings" counts linked transfers from everyday accounts into
+  savings, investment and retirement accounts (minus money moved back).
+  Uncategorized spending counts against Flex until it's categorized.
+  Averages use complete months only, starting from the first month with data.
+- **Net worth:** assets − liabilities at each month end. An account's balance
+  on a date comes from its nearest balance snapshot: the latest one before
+  the date plus later transactions, or the next one after it minus the
+  transactions in between (so a statement balance also corrects earlier
+  months). Before an account's first data point it isn't counted.
+- **Budget suggestions:** Fixed bills and expected income from the average of
+  the last three complete months; Non-monthly from the last 12 months,
+  annualized when there's less history. Rounded to whole dollars.
 
 ## 6. Savings goals
 

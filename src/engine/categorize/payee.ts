@@ -16,6 +16,7 @@ const PREFIXES = [
 // Noise at the end: card numbers, store numbers, dates, reference codes.
 const SUFFIXES = [
   /\s+(x+|\*+)\d{2,}$/i, // card number XXXX1234 / ****1234
+  /\s+\(?\d{3}\)?[-. ]?\d{3}-\d{4}$/, // phone number 800-266-2278
   /\s+(card|acct)\s*#?\s*\d+$/i,
   /\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?$/, // date 11/04 or 11/04/26
   /\s*#\s*\d+(\s+[A-Za-z .'-]+)?$/, // store #1234, optionally followed by "CITY ST"

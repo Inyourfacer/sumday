@@ -293,6 +293,22 @@ describe("detectRecurring", () => {
     expect(series[0]).toMatchObject({ accountId: 1, active: false });
   });
 
+  it("handles pay on the 1st and 15th", () => {
+    const series = detectRecurring(
+      [
+        tx(1, "2026-08-01", 260_000, "Payroll"),
+        tx(2, "2026-08-15", 260_000, "Payroll"),
+        tx(3, "2026-09-01", 260_000, "Payroll"),
+        tx(4, "2026-09-15", 260_000, "Payroll"),
+        tx(5, "2026-10-01", 260_000, "Payroll"),
+        tx(6, "2026-10-15", 260_000, "Payroll"),
+      ],
+      "2026-10-20",
+    );
+    expect(series[0]).toMatchObject({ frequency: "semimonthly", nextDate: "2026-11-01", active: true });
+    expect(upcoming(series, "2026-10-20", "2026-12-20").map((u) => u.date)).toEqual(["2026-11-01", "2026-11-15", "2026-12-01", "2026-12-15"]);
+  });
+
   it("projects upcoming occurrences of active series", () => {
     const series = detectRecurring(
       [tx(1, "2026-09-04", 250_000, "Pay"), tx(2, "2026-09-18", 250_000, "Pay"), tx(3, "2026-10-02", 250_000, "Pay")],

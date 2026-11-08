@@ -141,6 +141,13 @@ function lastMonths(current: MonthKey, count: number): MonthKey[] {
   return monthRange(nextMonth(current, -(count - 1)), current);
 }
 
+/** The last `count` months, but not before the first month with any transactions. */
+function dataMonths(db: Db, current: MonthKey, count: number): MonthKey[] {
+  const first = firstDataMonth(db);
+  const months = lastMonths(current, count).filter((m) => first === null || m >= first);
+  return months.length > 0 ? months : [current];
+}
+
 export function budgetFor(db: Db, month: MonthKey): BudgetResponse {
   const settings = getBudgetSettings(db);
   const now = today(db);
@@ -207,9 +214,11 @@ export function recurring(db: Db): RecurringResponse {
   const accountNames = new Map((db.prepare("SELECT id, name FROM accounts").all() as { id: number; name: string }[]).map((a) => [a.id, a.name]));
   const categoryNames = new Map((db.prepare("SELECT id, name FROM categories").all() as { id: number; name: string }[]).map((c) => [c.id, c.name]));
   const series = detectRecurring(rows, now);
+  const transferId = (db.prepare("SELECT id FROM categories WHERE budget_type = 'transfer' LIMIT 1").get() as { id: number } | undefined)?.id;
   const names = (accountId: number, categoryId: number | null) => ({
     accountName: accountNames.get(accountId) ?? "",
     categoryName: categoryId === null ? null : (categoryNames.get(categoryId) ?? null),
+    isTransfer: categoryId !== null && categoryId === transferId,
   });
   return {
     series: series.map((s) => ({ ...s, ...names(s.accountId, s.categoryId), ignored: ignored.has(s.key) })),
@@ -287,7 +296,7 @@ export function registerBudgetRoutes(app: FastifyInstance, db: Db): void {
 
   app.get("/api/cashflow", async (request): Promise<CashFlowResponse> => {
     const { months } = parse(monthsQuerySchema, request.query);
-    const range = lastMonths(monthOf(today(db)), months);
+    const range = dataMonths(db, monthOf(today(db)), months);
     const from = range[0]!;
     const to = range.at(-1)!;
     const uncategorized = loadUncategorized(db, from, to);
@@ -298,9 +307,8 @@ export function registerBudgetRoutes(app: FastifyInstance, db: Db): void {
       new Map([...uncategorized].map(([m, v]) => [m, v.out])),
       loadMovedToSavings(db, from, to),
     );
-    // Averages skip the current month and months before there was any data.
-    const first = firstDataMonth(db);
-    const complete = rows.slice(0, -1).filter((r) => first !== null && r.month >= first);
+    // Averages skip the current, unfinished month.
+    const complete = rows.slice(0, -1);
     const avg = (pick: (r: (typeof rows)[number]) => number) =>
       complete.length === 0 ? 0 : Math.round(complete.reduce((s, r) => s + pick(r), 0) / complete.length);
     const income = avg((r) => r.income);
@@ -319,11 +327,10 @@ export function registerBudgetRoutes(app: FastifyInstance, db: Db): void {
 
   app.get("/api/trends", async (request): Promise<TrendsResponse> => {
     const { months } = parse(monthsQuerySchema, request.query);
-    const range = lastMonths(monthOf(today(db)), months);
+    const range = dataMonths(db, monthOf(today(db)), months);
     const actuals = loadActuals(db, range[0]!, range.at(-1)!);
     const uncategorized = loadUncategorized(db, range[0]!, range.at(-1)!);
-    const first = firstDataMonth(db);
-    const completeIdx = range.map((m, i) => (i < range.length - 1 && first !== null && m >= first ? i : -1)).filter((i) => i >= 0);
+    const completeIdx = range.slice(0, -1).map((_, i) => i);
     const average = (values: number[]) =>
       completeIdx.length === 0 ? 0 : Math.round(completeIdx.reduce((s, i) => s + values[i]!, 0) / completeIdx.length);
 
