@@ -8,6 +8,9 @@ import { registerPlanRoutes } from "./plan.ts";
 import { registerInvestmentRoutes } from "./investments.ts";
 import { registerRetirementRoutes } from "./retirement.ts";
 import { registerScenarioRoutes } from "./scenarios.ts";
+import { registerAlertRoutes } from "./alerts.ts";
+import { registerReportRoutes } from "./reports.ts";
+import { registerBackupRoutes } from "./backup.ts";
 import { tiingoProvider, type PriceProvider } from "./prices.ts";
 import { registerCategoryRoutes } from "./categories.ts";
 import { schemaVersion, type Db } from "./db.ts";
@@ -24,6 +27,8 @@ export interface AppOptions {
   logger?: boolean;
   /** Where daily prices come from. Defaults to Tiingo with TIINGO_API_KEY. */
   priceProvider?: PriceProvider;
+  /** Where backups go; null turns them off (tests, in-memory databases). */
+  backupDir?: string | null;
 }
 
 const version = (
@@ -34,7 +39,7 @@ function count(db: Db, sql: string): number {
   return (db.prepare(sql).get() as { n: number }).n;
 }
 
-export async function buildApp({ db, webDir, logger = false, priceProvider }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, webDir, logger = false, priceProvider, backupDir }: AppOptions): Promise<FastifyInstance> {
   const prices = priceProvider ?? tiingoProvider(process.env.TIINGO_API_KEY);
   // Bank exports can be several MB; allow up to ~15 MB of JSON.
   const app = Fastify({ logger, bodyLimit: 15 * 1024 * 1024 });
@@ -68,6 +73,9 @@ export async function buildApp({ db, webDir, logger = false, priceProvider }: Ap
   registerInvestmentRoutes(app, db, prices);
   registerRetirementRoutes(app, db);
   registerScenarioRoutes(app, db);
+  registerAlertRoutes(app, db);
+  registerReportRoutes(app, db);
+  registerBackupRoutes(app, db, backupDir ?? null);
 
   if (webDir !== undefined && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });

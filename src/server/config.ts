@@ -10,6 +10,8 @@ export interface Config {
   host: string;
   /** Built web UI to serve, if it exists. */
   webDir: string;
+  /** Daily backups (the newest 30 are kept). */
+  backupDir: string;
 }
 
 const DEFAULT_PORT = 4321;
@@ -25,6 +27,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     port,
     host: "127.0.0.1",
     webDir: resolve(cwd, "dist"),
+    backupDir: resolve(cwd, env.SUMDAY_BACKUP_DIR || "var/backups"),
   };
 }
 

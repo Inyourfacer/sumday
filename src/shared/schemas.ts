@@ -431,6 +431,34 @@ export const compareQuerySchema = z.object({
     .refine((ids) => ids.length <= 3 && ids.every((x) => Number.isInteger(x) && x > 0), "Compare up to 3 scenarios."),
 });
 
+// ---------- Alerts ----------
+
+export const ALERT_KINDS = [
+  "over_budget",
+  "bill_changed",
+  "new_subscription",
+  "large_transaction",
+  "low_cash",
+  "drift",
+  "promo_ending",
+  "goal_behind",
+  "stale_data",
+] as const;
+export const alertSettingsSchema = z.object({
+  flexPacePct: z.number().min(0).max(200).optional(),
+  billChangePct: z.number().min(1).max(200).optional(),
+  largeAmount: cents.min(0).max(100_000_000).optional(),
+  largeMultiple: z.number().min(1.5).max(50).optional(),
+  lowCash: cents.min(-100_000_000).max(100_000_000).optional(),
+  promoDays: z.number().int().min(1).max(365).optional(),
+  staleDays: z.number().int().min(1).max(365).optional(),
+  disabled: z.array(z.enum(ALERT_KINDS)).optional(),
+  desktop: z.boolean().optional(),
+});
+export const alertDismissSchema = z.object({ key: z.string().min(1).max(500) });
+
+export const reportMonthSchema = z.object({ month: monthKey });
+
 // ---------- Retirement ----------
 
 const ageField = z.number().int().min(18).max(120);
