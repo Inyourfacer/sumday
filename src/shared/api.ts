@@ -192,9 +192,40 @@ export interface RetirementResponse {
       firstYear: number;
     };
   } | null;
+  /** Changes promoted from scenarios, in order (remove with DELETE /api/retirement/events/:index). */
+  events: string[];
   result: import("../engine/retire/montecarlo.ts").SimResult | null;
   whatIfs: import("../engine/retire/montecarlo.ts").WhatIfs | null;
   sources: { returns: string; returnsYears: string; rmd: string };
+}
+
+export interface ScenarioView {
+  id: number;
+  name: string;
+  overrides: import("./schemas.ts").OverrideInput[];
+  /** One line per change. */
+  summary: string[];
+}
+
+export interface ScenarioComparison {
+  ready: boolean;
+  missing: string[];
+  target: number;
+  /** The first row is your plan as it is today. */
+  rows: {
+    id: number | null;
+    name: string;
+    summary: string[];
+    successRate: number;
+    retireYear: number;
+    medianAtRetirement: number;
+    medianAtEnd: number;
+    medianDepletionYear: number | null;
+    affordableSpending: number;
+    ongoingSpending: number;
+    extraSavingsMonthly: number;
+    median: { year: number; value: number }[];
+  }[];
 }
 
 export interface DebtView {

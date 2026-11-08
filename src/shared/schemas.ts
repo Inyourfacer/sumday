@@ -383,6 +383,54 @@ export const holdingsImportSchema = z.object({
 });
 export const investmentsQuerySchema = z.object({ contribution: z.coerce.number().int().min(0).max(100_000_000).optional() });
 
+// ---------- Scenarios ----------
+
+const yearField = z.number().int().min(2000).max(2150);
+export const overrideSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("retirement_age"), personId: id, age: z.number().int().min(30).max(85) }),
+  z.object({
+    type: z.literal("income"),
+    personId: id,
+    /** New yearly pay in today's dollars (0 = stops working). */
+    income: cents.refine((v) => v >= 0, "Can't be negative."),
+    pretaxPct: z.number().min(0).max(100).nullable().default(null),
+  }),
+  z.object({ type: z.literal("extra_savings"), monthly: cents }),
+  z.object({ type: z.literal("retirement_spending"), annualChange: cents }),
+  z.object({
+    type: z.literal("lump_sum"),
+    label: z.string().trim().min(1, "Name it.").max(80),
+    year: yearField,
+    /** Positive = money in (inheritance, sale); negative = money out (wedding, gift). */
+    amount: cents.refine((v) => v !== 0, "Enter an amount."),
+  }),
+  z.object({ type: z.literal("allocation"), stocks: z.number().min(0).max(1), bonds: z.number().min(0).max(1), cash: z.number().min(0).max(1) }),
+  z.object({
+    type: z.literal("home_purchase"),
+    year: yearField,
+    downPayment: cents.refine((v) => v >= 0, "Can't be negative."),
+    /** Change in monthly housing cost after buying (can be negative). */
+    monthlyCostChange: cents,
+  }),
+]);
+export type OverrideInput = z.infer<typeof overrideSchema>;
+
+export const scenarioInputSchema = z.object({
+  name: z.string().trim().min(1, "Name the scenario.").max(80),
+  overrides: z.array(overrideSchema).max(20),
+});
+export const scenarioPatchSchema = z.object({
+  name: z.string().trim().min(1, "Name the scenario.").max(80).optional(),
+  overrides: z.array(overrideSchema).max(20).optional(),
+});
+export const compareQuerySchema = z.object({
+  ids: z
+    .string()
+    .default("")
+    .transform((v) => v.split(",").filter(Boolean).map(Number))
+    .refine((ids) => ids.length <= 3 && ids.every((x) => Number.isInteger(x) && x > 0), "Compare up to 3 scenarios."),
+});
+
 // ---------- Retirement ----------
 
 const ageField = z.number().int().min(18).max(120);
@@ -394,6 +442,8 @@ export const retirementSettingsSchema = z.object({
   runs: z.number().int().min(500).max(20_000).optional(),
   blockLength: z.number().int().min(1).max(15).optional(),
   includePlanSavings: z.boolean().optional(),
+  /** Changes promoted from scenarios that live in the retirement plan (savings, spending, one-time amounts, a home). */
+  events: z.array(overrideSchema).max(30).optional(),
   spending: z
     .object({
       /** Yearly amount in retirement per category id; null or missing = same as today. */

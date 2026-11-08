@@ -5,6 +5,7 @@ import { fees } from "../engine/invest/portfolio.ts";
 import { simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
 import { benefitAtClaim, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
+import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
 import type { RetirementResponse } from "../shared/api.ts";
 import { retirementSettingsSchema } from "../shared/schemas.ts";
 import { listAccounts } from "./accounts.ts";
@@ -29,6 +30,8 @@ interface StoredSettings {
   blockLength: number;
   includePlanSavings: boolean;
   spending: { categoryOverrides: Record<string, number | null>; items: SpendingPlan["items"]; oneOffs: SpendingPlan["oneOffs"] };
+  /** Changes promoted from scenarios (extra savings, spending changes, one-time amounts, a home). */
+  events: Override[];
 }
 
 const DEFAULTS: StoredSettings = {
@@ -39,20 +42,21 @@ const DEFAULTS: StoredSettings = {
   blockLength: 5,
   includePlanSavings: true,
   spending: { categoryOverrides: {}, items: [], oneOffs: [] },
+  events: [],
 };
 
-function getSettings(db: Db): StoredSettings {
+export function getSettings(db: Db): StoredSettings {
   const stored = getSetting<Partial<StoredSettings>>(db, "retirement") ?? {};
   return { ...DEFAULTS, ...stored, spending: { ...DEFAULTS.spending, ...stored.spending } };
 }
 
-interface Built {
+export interface Built {
   input: SimInput;
   view: NonNullable<RetirementResponse["inputs"]>;
 }
 
 /** Gather everything the simulation needs from the household, accounts, budget and plan. */
-function buildInput(db: Db, settings: StoredSettings): { built: Built | null; missing: string[] } {
+export function buildInput(db: Db, settings: StoredSettings): { built: Built | null; missing: string[] } {
   const now = today(db);
   const startYear = parseIsoDate(now).year;
   const household = getHousehold(db);
@@ -147,7 +151,7 @@ function buildInput(db: Db, settings: StoredSettings): { built: Built | null; mi
   // Regular yearly spending when retirement starts, without one-off costs.
   const ongoingAtRetirement = (retireYear: number) => spendingAtAge({ ...plan, oneOffs: [] }, retireYear - primary.birthYear);
 
-  const input: SimInput = {
+  const raw: SimInput = {
     startYear,
     endYear,
     people: simPeople,
@@ -163,6 +167,9 @@ function buildInput(db: Db, settings: StoredSettings): { built: Built | null; mi
     blockLength: settings.blockLength,
     seed: 20_260_101,
   };
+  // Events promoted from scenarios apply on top of the plan.
+  const input = applyOverrides(raw, settings.events);
+  const ongoingInput = applyOverrides({ ...raw, spending: raw.spending.map((_, t) => ongoingAtRetirement(startYear + t)) }, settings.events);
   const workers = simPeople.filter((p) => p.income > 0);
   const retireYear = workers.length ? Math.max(startYear, ...workers.map((p) => p.birthYear + p.retirementAge)) : startYear;
   const traditional = Object.values(balances.traditional).reduce((s, v) => s + v, 0);
@@ -191,7 +198,7 @@ function buildInput(db: Db, settings: StoredSettings): { built: Built | null; mi
           total: extraSavings.taxable + extraSavings.roth + extraSavings.hsa + Object.values(extraSavings.traditional).reduce((s, v) => s + v, 0),
           fromPlan: settings.includePlanSavings,
         },
-        spending: { ...plan, firstYear: ongoingAtRetirement(retireYear) },
+        spending: { ...plan, firstYear: ongoingInput.spending[Math.max(0, retireYear - startYear)] ?? 0 },
       },
     },
   };
@@ -224,13 +231,15 @@ export function retirement(db: Db): RetirementResponse {
     blockLength: settings.blockLength,
     includePlanSavings: settings.includePlanSavings,
   };
-  if (!built) return { ready: false, missing, settings: publicSettings, inputs: null, result: null, whatIfs: null, sources };
+  const who = new Map(getPeople(db).map((p) => [p.id, p.name]));
+  const events = settings.events.map((o) => describeOverride(o, who));
+  if (!built) return { ready: false, missing, settings: publicSettings, inputs: null, events, result: null, whatIfs: null, sources };
   const key = JSON.stringify({ i: { ...built.input, history: undefined, rmd: undefined }, t: settings.successTarget, w: true });
   const { result, whatIfs: w } = cached(key, () => {
     const result = simulate(built.input);
     return { result, whatIfs: whatIfs(built.input, settings.successTarget, result, 1500, built.view.spending.firstYear) };
   });
-  return { ready: true, missing: [], settings: publicSettings, inputs: built.view, result, whatIfs: w, sources };
+  return { ready: true, missing: [], settings: publicSettings, inputs: built.view, events, result, whatIfs: w, sources };
 }
 
 export function registerRetirementRoutes(app: FastifyInstance, db: Db): void {
