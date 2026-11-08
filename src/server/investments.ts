@@ -104,7 +104,11 @@ export function investments(db: Db, provider: PriceProvider, contribution?: numb
     .filter((h) => h.price_error)
     .map((h) => ({ label: h.ticker ?? h.name, message: h.price_error! }))
     .filter((e, i, all) => all.findIndex((x) => x.label === e.label) === i);
-  const latest = rows.map((h) => h.price_date).filter((x): x is string => x !== null).sort().at(-1) ?? null;
+  // "Prices as of": the feed's latest close (statement and $1 money-market prices don't count).
+  const latest =
+    (db.prepare("SELECT MAX(date) AS d FROM prices WHERE source = 'provider' AND security_id IN (SELECT security_id FROM holdings)").get() as { d: string | null }).d ??
+    rows.map((h) => h.price_date).filter((x): x is string => x !== null).sort().at(-1) ??
+    null;
 
   return {
     accounts: accountIds.map((id) => {

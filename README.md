@@ -7,10 +7,11 @@ your next dollar, using rules and math you can inspect.
 - [Design](docs/DESIGN.md)
 - [Build plan](docs/PLAN.md)
 
-> **Status:** Phases 1–3 are done: household setup, accounts, CSV/OFX import
+> **Status:** Phases 1–4 are done: household setup, accounts, CSV/OFX import
 > with review and undo, categories, rules, transfer matching, the Fixed /
 > Flex / Non-monthly budget, cash flow, recurring bills, net worth, savings
-> goals, debt payoff plans and **Next best moves**. Investments come next.
+> goals, debt payoff, **Next best moves**, and investments (holdings, daily
+> prices, mix vs target, rebalancing, fees). Retirement projections come next.
 
 ## Using it
 
@@ -40,6 +41,13 @@ your next dollar, using rules and math you can inspect.
    settings. For debts, add the APR and minimum payment on each account, and
    untick "paid in full" on cards that carry a balance.
 
+8. **Investments**: download a positions CSV from each brokerage or 401(k)
+   site and use **Import positions**. Set your target mix, give blended funds
+   (target-date) their mix and each fund its expense ratio, and for 401(k)
+   funds without a ticker, pick a public fund it follows (e.g. VOO for an
+   S&P 500 trust). The page shows what to buy next and, if you've drifted,
+   the cheapest way back.
+
 Contribution limits live in `data/limits/<year>.json`. Add next year's file
 when the IRS announces it (usually in November).
 
@@ -51,6 +59,16 @@ Requires Node 22+.
 npm install
 npm start          # builds the UI and serves Sumday at http://127.0.0.1:4321
 ```
+
+For daily investment prices, get a free API key at tiingo.com and put it in a
+`.env` file in this folder (copy `.env.example`):
+
+```sh
+TIINGO_API_KEY=your-key-here
+```
+
+Without a key everything else works; prices come from your imported files or
+what you type in.
 
 Your data lives in `var/sumday.db` (a single SQLite file, ignored by git).
 To change the location or port, copy `.env.example` to `.env` and edit it.

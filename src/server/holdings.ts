@@ -1,4 +1,4 @@
-import { addDays, type IsoDate } from "../engine/dates.ts";
+import { addDays, parseIsoDate, type IsoDate } from "../engine/dates.ts";
 import { defaultMix, validateMix, type AssetMix } from "../engine/invest/classify.ts";
 import type { Position, Target } from "../engine/invest/portfolio.ts";
 import type { TaxTreatment } from "../shared/schemas.ts";
@@ -125,6 +125,18 @@ export function snapshotHoldingsAccounts(db: Db, accountIds?: readonly number[])
   }
 }
 
+/**
+ * The most recent trading day whose close should already be published:
+ * yesterday, or Friday over a weekend and on Monday. (Holidays just cost one
+ * extra, empty request.)
+ */
+export function latestExpectedClose(now: IsoDate): IsoDate {
+  const { year, month, day } = parseIsoDate(now);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0 = Sunday
+  const back = weekday === 0 ? 2 : weekday === 1 ? 3 : weekday === 6 ? 1 : 1;
+  return addDays(now, -back);
+}
+
 export interface RefreshSummary {
   provider: string;
   configured: boolean;
@@ -148,6 +160,8 @@ export async function refreshPrices(db: Db, provider: PriceProvider): Promise<Re
        WHERE a.is_closed = 0 AND h.shares <> 0`,
     )
     .all() as { id: number; ticker: string | null; proxy_ticker: string | null; last: string | null }[];
+  // Free price plans allow only so many requests an hour: skip anything already up to date.
+  const expected = latestExpectedClose(now);
 
   const setError = db.prepare("UPDATE securities SET price_error = ? WHERE id = ?");
   for (const s of held) {
@@ -155,19 +169,26 @@ export async function refreshPrices(db: Db, provider: PriceProvider): Promise<Re
       if (s.ticker) {
         if (/^(SPAXX|FDRXX|VMFXX|SWVXX|FZFXX|VUSXX|CORE)$/i.test(s.ticker)) {
           // Money market funds hold $1 a share.
-          setPrice(db, s.id, now, 1, "provider");
+          setPrice(db, s.id, now, 1, "import");
           setError.run(null, s.id);
           continue;
         }
         // From the day after the last feed price: a price from an imported file (or one typed in)
         // doesn't stop the feed from filling in that day's official close.
+        if (s.last && s.last >= expected) continue;
         const from = s.last ? addDays(s.last, 1) : addDays(now, -10);
         if (from > now) continue;
         const closes = await provider.fetchCloses(s.ticker, from, now);
         for (const c of closes) setPrice(db, s.id, c.date, c.close, "provider");
+        // A positions file is stamped with the day it was imported, but its "last price" is really
+        // the latest close. Once the feed has that close, drop the newer-dated file price.
+        const latest = db.prepare("SELECT MAX(date) AS d FROM prices WHERE security_id = ? AND source = 'provider'").get(s.id) as { d: string | null };
+        if (latest.d) db.prepare("DELETE FROM prices WHERE security_id = ? AND source = 'import' AND date > ?").run(s.id, latest.d);
         summary.updated += closes.length;
         setError.run(null, s.id);
       } else if (s.proxy_ticker) {
+        const lastProxy = db.prepare("SELECT MAX(date) AS d FROM prices WHERE security_id = ? AND source = 'proxy'").get(s.id) as { d: string | null };
+        if (lastProxy.d && lastProxy.d >= expected) continue;
         summary.updated += await refreshProxy(db, provider, s.id, s.proxy_ticker, now);
         setError.run(null, s.id);
       }

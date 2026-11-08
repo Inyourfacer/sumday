@@ -196,7 +196,8 @@ export function rebalance(positions: readonly Position[], target: Target): Rebal
         label: p.label,
         accountName: p.accountName,
         amount,
-        estimatedGain: p.costBasis === null ? null : multiplyCents(amount, gainRatio(p)),
+        // Cash has no gain to tax.
+        estimatedGain: sell === "cash" ? 0 : p.costBasis === null ? null : multiplyCents(amount, gainRatio(p)),
       });
       // Spread the proceeds over the underweight classes in order.
       let left = amount;

@@ -295,39 +295,53 @@ All thresholds are editable in Plan settings.
 
 ## 10. Investments
 
-- **Holdings** come from brokerage CSV imports or manual entry, with **cost
-  basis lots** where available.
+- **Holdings** come from a brokerage or 401(k) "positions" CSV (symbol,
+  description, quantity, price, value, cost basis) or manual entry. The
+  column mapping is guessed, shown with a preview, and saved per account. A
+  positions file is a snapshot: it replaces the account's holdings, and
+  anything missing is treated as sold. Summary lines ("Total", "Pending
+  activity") are skipped by whole-cell match, so a fund called "Total Stock
+  Market" is kept. Cost basis is per holding; per-lot basis is a later
+  addition.
+- **Account value:** each holdings account's market value is written as a
+  balance snapshot, so account balances and net worth use market prices.
 - **Prices:** a `PriceProvider` interface. The default provider is **Tiingo**
-  (free API key). It has end-of-day prices for US stocks, ETFs and mutual funds,
-  adjusted for splits and dividends, and a free tier large enough for a daily
-  refresh of every held ticker. Alpha Vantage's free tier (about 25
-  requests/day) is too small. A daily job fetches closes for held tickers
-  only and backfills any days the machine was off. Free-tier limits are checked
-  again at build time.
-- **Funds without a ticker** (common in 401k plans): a security can have a
-  **proxy ticker**, and Sumday applies the proxy's daily % change to the
-  last known price. Each import that includes a real price resets it.
-  Manual price entry is the final fallback.
+  (free API key in `TIINGO_API_KEY` in `.env`): daily closes for US stocks,
+  ETFs and mutual funds. A background job runs at startup and every 6 hours.
+  It fetches only what's missing, from the day after the last feed close,
+  and skips tickers that already have the latest trading day's close, to
+  stay within the free tier. A positions file's price is stamped with the
+  import day; once the feed has the real latest close, the feed's close
+  wins. Money-market funds are fixed at $1. Prices you type in are never
+  overwritten.
+- **Funds without a ticker** (common in 401(k) plans) can follow a **proxy
+  ticker**: from the last real price (statement or typed in), each day moves
+  by the proxy's % change.
 - **Asset classes:** US stock, international stock, bonds, cash, real estate,
-  other. A security can be a blend (e.g. a target-date fund = 54% US stock /
-  36% intl / 10% bonds). Common funds get default mappings, and you can
-  override them.
-- **Allocation** is viewed across the whole household, plus per account and per
-  person.
-- **Target allocation:** you set one household target (e.g. 60/30/10). An
-  optional age-based glide path shifts it toward bonds over time.
-- **Drift band:** ±5 percentage points absolute or ±25% relative, whichever is
-  smaller.
-- **Rebalancing suggestions,** cheapest first:
-  1. Send new contributions to the most underweight classes.
-  2. Trade inside tax-advantaged accounts (no tax cost).
-  3. Trade in taxable accounts only when still outside the band. Prefer lots
-     with losses, warn about short-term gains, and show the estimated gain.
-- **Asset location hints:** bonds in tax-deferred accounts, broad stock index
-  funds in taxable. These are suggestions only.
-- **Fee drag:** weighted expense ratio and its projected dollar cost over 10
-  and 30 years.
-- **Performance:** money-weighted return (XIRR) per account and overall.
+  other. A security has a mix (a target-date fund is a blend). Common index
+  funds and money markets are recognized by ticker; others are guessed from
+  their name and marked "guess"; blended funds (target-date, balanced) are
+  left for you to set from their fact sheet.
+- **Allocation** covers brokerage, retirement and HSA accounts (529s are for
+  school and left out). Unclassified holdings are shown but not counted.
+- **Target allocation:** one household target (default 60/30/10 until you set
+  yours). An age-based glide path is a later addition.
+- **Drift band:** ±5 percentage points or ±25% of the target, whichever is
+  smaller, with a 1-point floor so tiny cash balances don't nag.
+- **Next contribution:** the plan's monthly investing amount (IRA, workplace
+  plan, HSA, brokerage), or one you type, split to fill underweight classes
+  first, with a held fund suggested for each.
+- **Rebalancing suggestions,** cheapest first: (1) trades inside
+  tax-advantaged accounts; (2) only for what's left, taxable sales, losses
+  first, then the smallest gains, with the estimated gain shown.
+- **Asset location hints:** bonds in taxable or Roth while pre-tax accounts
+  hold stocks.
+- **Fees:** value-weighted expense ratio (entered per fund), yearly cost, and
+  growth lost over 10 and 30 years at 6% a year before fees. Funds over 0.5%
+  are flagged, also in Next best moves.
+- **Returns:** money-weighted return (XIRR) per account, from the first
+  balance snapshot (at least 90 days ago), transfers in and out, and today's
+  value. Payroll contributions that aren't imported make it approximate.
 
 ## 11. Retirement
 

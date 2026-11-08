@@ -323,6 +323,11 @@ export function AccountDetailPage({ id }: { id: number }) {
             <Link to={`/import?accountId=${id}`} className="button secondary">
               Import
             </Link>
+            {INVESTMENT_TYPES.includes(a.type) && (
+              <Link to={`/investments/import?accountId=${id}`} className="button secondary">
+                Import positions
+              </Link>
+            )}
             <button type="button" onClick={() => setEditing(true)}>
               Edit
             </button>

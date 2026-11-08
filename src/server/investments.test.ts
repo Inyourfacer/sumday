@@ -85,7 +85,7 @@ describe("positions import", () => {
     const inv = await ok<InvestmentsResponse>("GET", "/api/investments");
     const holdings = inv.accounts[0]!.holdings;
     expect(holdings.map((h) => [h.ticker, h.price, h.priceSource, h.mix])).toEqual([
-      ["SPAXX", 1, "provider", { cash: 1 }],
+      ["SPAXX", 1, "import", { cash: 1 }], // money market: fixed at $1, not a feed price
       ["VTI", 380, "provider", { us_stock: 1 }],
       ["VXUS", 80, "provider", { intl_stock: 1 }],
     ]);
@@ -113,6 +113,23 @@ describe("positions import", () => {
 });
 
 describe("prices", () => {
+  it("lets the feed's latest close replace a positions file's price stamped later", async () => {
+    // Over a weekend the feed's last close is Friday's, but the file is stamped with the import day.
+    const fridayFeed: PriceProvider = {
+      name: "Fake",
+      configured: true,
+      async fetchCloses(t, from, to) {
+        const friday = addDays(today, -2);
+        return t === "VTI" && from <= friday && friday <= to ? [{ date: friday, close: 360.52 }] : [];
+      },
+    };
+    await app.close();
+    app = await buildApp({ db, priceProvider: fridayFeed });
+    await importPositions("Symbol,Description,Quantity,Last Price\nVTI,Total market,10,370\n");
+    const h = (await ok<InvestmentsResponse>("GET", "/api/investments")).accounts[0]!.holdings[0]!;
+    expect(h).toMatchObject({ price: 360.52, priceSource: "provider", priceDate: addDays(today, -2) });
+  });
+
   it("records errors for unknown tickers and only fetches what's missing", async () => {
     await ok("POST", "/api/holdings", { accountId: brokerage.id, ticker: "ZZZZ", name: "Mystery", shares: 10 });
     let inv = await ok<InvestmentsResponse>("GET", "/api/investments");
@@ -122,8 +139,9 @@ describe("prices", () => {
     await ok("POST", "/api/holdings", { accountId: brokerage.id, ticker: "VTI", shares: 1 });
     calls.length = 0;
     await ok("POST", "/api/prices/refresh");
-    // VTI is up to date, so it's not fetched again; the unknown ticker is retried.
+    // VTI already has the latest close, so it isn't fetched again; the unknown ticker is retried.
     expect(calls.some((c) => c.startsWith("VTI"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("ZZZZ"))).toBe(true);
     inv = await ok<InvestmentsResponse>("GET", "/api/investments");
     expect(inv.prices.latest).toBe(today);
   });

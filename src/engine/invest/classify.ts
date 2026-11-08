@@ -45,6 +45,8 @@ export function defaultMix(ticker: string | null, name: string): MixGuess | unde
   const n = name.toLowerCase();
   if (/money market|cash|sweep|core position|government cash|treasury money/.test(n)) return { mix: one("cash"), source: "guessed" };
   if (/target|retirement 20\d\d|lifecycle|balanced|allocation|wellington|lifestrategy/.test(n)) return undefined; // blended: ask
+  // Stable value funds (common in 401(k)s) behave like short-term bonds.
+  if (/stable value|guaranteed|fixed account/.test(n)) return { mix: one("bonds"), source: "guessed" };
   if (/reit|real estate/.test(n)) return { mix: one("real_estate"), source: "guessed" };
   if (/bond|treasury|income|fixed|aggregate|tips|municipal/.test(n)) return { mix: one("bonds"), source: "guessed" };
   if (/international|intl|developed|emerging|ex[- ]us|world ex|foreign|europe|pacific/.test(n)) return { mix: one("intl_stock"), source: "guessed" };

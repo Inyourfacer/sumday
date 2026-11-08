@@ -1675,6 +1675,69 @@ button.tile.strategy.chosen {
   margin-right: 8px;
 }
 
+/* ---------- Investments ---------- */
+
+.mix-rows {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.mix-rows li {
+  display: grid;
+  grid-template-columns: 160px minmax(80px, 1fr) 110px 120px 90px;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.mix-rows li:first-child {
+  border-top: none;
+}
+
+.mix-bar {
+  position: relative;
+  height: 12px;
+  background: var(--panel-2);
+  border-radius: 999px;
+}
+
+.mix-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--series-1);
+  border-radius: 999px;
+}
+
+/* The target is a tick in text ink, so it never depends on color alone. */
+.mix-target {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  border-radius: 1px;
+}
+
+.target-key {
+  width: 2px;
+  height: 12px;
+  background: var(--text);
+  display: inline-block;
+}
+
+.mix-num,
+.mix-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.holdings td:first-child {
+  min-width: 180px;
+}
+
 /* ---------- Modal ---------- */
 
 .overlay {
@@ -1813,6 +1876,19 @@ code {
 
   .move {
     grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .mix-rows li {
+    grid-template-columns: 1fr auto;
+  }
+
+  .mix-bar {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+
+  .mix-value {
+    display: none;
   }
 
   .move-amount {

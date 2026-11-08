@@ -13,6 +13,7 @@ describe("classification", () => {
     expect(defaultMix(null, "BlackRock U.S. Debt Index Fund - Aggregate Bond")?.mix).toEqual({ bonds: 1 });
     expect(defaultMix(null, "Vanguard Developed Markets Index")?.mix).toEqual({ intl_stock: 1 });
     expect(defaultMix(null, "State Street S&P 500 Index Non-Lending Fund")?.mix).toEqual({ us_stock: 1 });
+    expect(defaultMix(null, "Stable Value Fund")?.mix).toEqual({ bonds: 1 });
     // Blended funds are left for the user.
     expect(defaultMix(null, "Vanguard Target Retirement 2055 Fund")).toBeUndefined();
     expect(defaultMix("XYZQ", "Mystery Holdings LLC")).toBeUndefined();
@@ -209,6 +210,14 @@ describe("positions CSV", () => {
     expect(positions).toHaveLength(1);
     expect(positions[0]).toMatchObject({ ticker: null, name: "State Street S&P 500 Index Fund", shares: 1234.5678, value: 4_567_890 });
     expect(positions[0]!.price).toBeCloseTo(37.0, 1);
+  });
+
+  it("keeps funds whose names start with Total, and skips real total lines", () => {
+    const rows = parseCsv("Symbol,Description,Quantity,Current Value\nFSKAX,TOTAL MARKET INDEX,10,$1500.00\nTotal,,,$1500.00\nAccount Total:,,,$1500.00\n");
+    const { mapping } = suggestHoldingsMapping(rows);
+    const { positions, skipped } = applyHoldingsMapping(rows, mapping!);
+    expect(positions.map((p) => p.ticker)).toEqual(["FSKAX"]);
+    expect(skipped).toEqual([]);
   });
 
   it("cleans tickers", () => {

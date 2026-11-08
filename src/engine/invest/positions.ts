@@ -97,7 +97,8 @@ export function cleanTicker(text: string | undefined): string | null {
   return /^[A-Z][A-Z0-9.-]{0,9}$/.test(t) ? t : null;
 }
 
-const SKIP = /^(account total|total|pending activity|grand total|subtotal|cash & cash investments total)/i;
+// Summary lines, matched on the whole cell: a fund called "Total Stock Market" is a real holding.
+const SKIP = /^(account total|totals?|pending activity|grand total|sub-?total|cash & cash investments total|cash & sweep total)\s*:?$/i;
 const CASH_ROW = /cash|money market|core|sweep/i;
 
 export function applyHoldingsMapping(

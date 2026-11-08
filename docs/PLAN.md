@@ -46,7 +46,7 @@ imported, categorized and deduplicated.
 **Done when:** the dashboard tells you where this month's surplus should go,
 and why.
 
-## Phase 4: Investments
+## Phase 4: Investments ✅
 - Holdings import (positions + cost basis lots), securities with asset-class
   mixes and expense ratios.
 - `PriceProvider` interface, the Tiingo provider (free key in `.env`), proxy
