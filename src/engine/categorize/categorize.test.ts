@@ -16,6 +16,7 @@ describe("cleanPayee", () => {
     ["CHECKCARD PURCHASE TARGET STORE 1234", "Target"],
     ["NETFLIX.COM XXXX1234", "Netflix.com"],
     ["ACH DEBIT CITY WATER UTIL", "City Water Util"],
+    ["COMCAST CABLE 800-266-2278", "Comcast Cable"],
     ["Already Nice Name", "Already Nice Name"],
     ["  lots   of   space  ", "lots of space"],
   ])("%s → %s", (raw, cleaned) => {

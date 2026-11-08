@@ -23,6 +23,10 @@ interface AccountRow {
   interest_rate_pct: number | null;
   is_closed: number;
   csv_mapping: string | null;
+  minimum_payment: number | null;
+  promo_rate_pct: number | null;
+  promo_ends: string | null;
+  pays_in_full: number | null;
   snap_date: string | null;
   snap_balance: number | null;
   after_sum: number;
@@ -58,6 +62,10 @@ function toView(r: AccountRow): AccountView {
     interestRatePct: r.interest_rate_pct,
     isClosed: r.is_closed === 1,
     isLiability: LIABILITY_TYPES.includes(r.type),
+    minimumPayment: r.minimum_payment,
+    promoRatePct: r.promo_rate_pct,
+    promoEnds: r.promo_ends,
+    paysInFull: r.pays_in_full === null ? r.type === "credit_card" : r.pays_in_full === 1,
     balance: (r.snap_balance ?? 0) + r.after_sum,
     balanceAsOf: asOf,
     transactionCount: r.txn_count,
@@ -124,8 +132,9 @@ export function registerAccountRoutes(app: FastifyInstance, db: Db): void {
     checkOwner(db, input.ownerPersonId);
     const result = db
       .prepare(
-        `INSERT INTO accounts (name, institution, type, tax_treatment, owner_person_id, interest_rate_pct, is_closed)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO accounts (name, institution, type, tax_treatment, owner_person_id, interest_rate_pct, is_closed,
+           minimum_payment, promo_rate_pct, promo_ends, pays_in_full)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -135,6 +144,10 @@ export function registerAccountRoutes(app: FastifyInstance, db: Db): void {
         input.ownerPersonId,
         input.interestRatePct,
         input.isClosed ? 1 : 0,
+        input.minimumPayment,
+        input.promoRatePct,
+        input.promoEnds,
+        input.paysInFull === null ? null : input.paysInFull ? 1 : 0,
       );
     return reply.code(201).send(getAccount(db, Number(result.lastInsertRowid)));
   });
@@ -149,7 +162,8 @@ export function registerAccountRoutes(app: FastifyInstance, db: Db): void {
       patch.taxTreatment ?? (patch.type !== undefined && patch.type !== current.type ? defaultTaxTreatment(type) : current.taxTreatment);
     db.prepare(
       `UPDATE accounts SET name = ?, institution = ?, type = ?, tax_treatment = ?, owner_person_id = ?,
-         interest_rate_pct = ?, is_closed = ? WHERE id = ?`,
+         interest_rate_pct = ?, is_closed = ?, minimum_payment = ?, promo_rate_pct = ?, promo_ends = ?,
+         pays_in_full = COALESCE(?, pays_in_full) WHERE id = ?`,
     ).run(
       patch.name ?? current.name,
       patch.institution ?? current.institution,
@@ -158,6 +172,10 @@ export function registerAccountRoutes(app: FastifyInstance, db: Db): void {
       patch.ownerPersonId === undefined ? current.ownerPersonId : patch.ownerPersonId,
       patch.interestRatePct === undefined ? current.interestRatePct : patch.interestRatePct,
       (patch.isClosed ?? current.isClosed) ? 1 : 0,
+      patch.minimumPayment === undefined ? current.minimumPayment : patch.minimumPayment,
+      patch.promoRatePct === undefined ? current.promoRatePct : patch.promoRatePct,
+      patch.promoEnds === undefined ? current.promoEnds : patch.promoEnds,
+      patch.paysInFull === undefined || patch.paysInFull === null ? null : patch.paysInFull ? 1 : 0,
       id,
     );
     return getAccount(db, id);

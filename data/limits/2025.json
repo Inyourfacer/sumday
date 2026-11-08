@@ -1,0 +1,13 @@
+{
+  "year": 2025,
+  "source": "IRS Notice 2024-80 and Rev. Proc. 2024-25 (HSA). Amounts in cents.",
+  "workplace": { "employee": 2350000, "catchUp50": 750000, "catchUp60to63": 1125000 },
+  "ira": { "limit": 700000, "catchUp50": 100000 },
+  "hsa": { "self": 430000, "family": 855000, "catchUp55": 100000 },
+  "rothIraPhaseOut": {
+    "single": [15000000, 16500000],
+    "head_of_household": [15000000, 16500000],
+    "married_joint": [23600000, 24600000],
+    "married_separate": [0, 1000000]
+  }
+}

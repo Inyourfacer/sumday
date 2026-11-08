@@ -13,6 +13,7 @@ import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { Amount, Empty, ErrorNote, Field, Loading, Modal, MoneyInput, NumberInput, PageHeader } from "../components/ui.tsx";
 import { formatDate, plural, todayLocal } from "../format.ts";
 import { Link } from "../router.tsx";
+import { NetWorthPanel } from "../components/NetWorthPanel.tsx";
 import { navigate } from "../navigation.ts";
 
 const GROUPS: { title: string; types: AccountType[] }[] = [
@@ -41,6 +42,10 @@ interface AccountDraft {
   ownerPersonId: number | null;
   interestRatePct: number | null;
   isClosed: boolean;
+  minimumPayment: number | null;
+  promoRatePct: number | null;
+  promoEnds: string | null;
+  paysInFull: boolean;
 }
 
 export function AccountForm({
@@ -62,6 +67,10 @@ export function AccountForm({
       ownerPersonId: null,
       interestRatePct: null,
       isClosed: false,
+      minimumPayment: null,
+      promoRatePct: null,
+      promoEnds: null,
+      paysInFull: true,
     },
   );
   const [error, setError] = useState<string>();
@@ -108,7 +117,7 @@ export function AccountForm({
             value={draft.type}
             onChange={(e) => {
               const type = e.target.value as AccountType;
-              setDraft({ ...draft, type, taxTreatment: defaultTaxTreatment(type) });
+              setDraft({ ...draft, type, taxTreatment: defaultTaxTreatment(type), paysInFull: type === "credit_card" });
             }}
           >
             {ACCOUNT_TYPES.map((t) => (
@@ -143,6 +152,25 @@ export function AccountForm({
           <Field label={isDebt ? "Interest rate (APR)" : "Interest rate (APY)"}>
             <NumberInput value={draft.interestRatePct} min={0} max={100} step={0.01} suffix="%" onChange={(v) => set("interestRatePct", v)} />
           </Field>
+        )}
+        {isDebt && (
+          <>
+            <Field label="Minimum payment" hint="Per month. Left blank, 2% of the balance is assumed.">
+              <MoneyInput value={draft.minimumPayment} onChange={(v) => set("minimumPayment", v)} ariaLabel="Minimum payment" />
+            </Field>
+            <Field label="Intro rate" hint="Optional 0% or promo APR">
+              <NumberInput value={draft.promoRatePct} min={0} max={100} step={0.01} suffix="%" onChange={(v) => set("promoRatePct", v)} ariaLabel="Intro rate" />
+            </Field>
+            <Field label="Intro rate ends">
+              <input type="date" value={draft.promoEnds ?? ""} onChange={(e) => set("promoEnds", e.target.value || null)} />
+            </Field>
+          </>
+        )}
+        {draft.type === "credit_card" && (
+          <label className="check wide">
+            <input type="checkbox" checked={draft.paysInFull} onChange={(e) => set("paysInFull", e.target.checked)} />
+            Paid in full every month (not debt to pay down)
+          </label>
         )}
         {initial && (
           <label className="check">
@@ -198,6 +226,7 @@ export function AccountsPage() {
           </div>
         </div>
       )}
+      {list.length > 0 && <NetWorthPanel />}
       {GROUPS.map((group) => {
         const inGroup = list.filter((a) => group.types.includes(a.type));
         if (inGroup.length === 0) return null;

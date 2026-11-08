@@ -4,6 +4,157 @@ import type { CsvMapping } from "../engine/import/mapping.ts";
 import type { RowError } from "../engine/import/types.ts";
 import type { RuleActions, RuleMatch } from "../engine/categorize/rules.ts";
 import type { AccountType, BudgetType, Household, Person, TaxTreatment } from "./schemas.ts";
+import type { BudgetMonth, CashFlowMonth } from "../engine/budget/budget.ts";
+import type { NetWorthPoint } from "../engine/budget/networth.ts";
+import type { RecurringSeries, UpcomingItem } from "../engine/budget/recurring.ts";
+
+import type { GoalProgress } from "../engine/plan/goals.ts";
+import type { StrategyComparison } from "../engine/plan/debt.ts";
+import type { Fact, Recommendation, StepId, WaterfallResult } from "../engine/plan/waterfall.ts";
+
+export type { BudgetMonth, CashFlowMonth, NetWorthPoint, RecurringSeries, UpcomingItem };
+export type { Fact, GoalProgress, Recommendation, StepId, StrategyComparison, WaterfallResult };
+
+export interface PlanSettings {
+  steps: { id: StepId; enabled: boolean }[];
+  starterAmount: number;
+  highInterestApr: number;
+  /** null = 3 months with two earners, 6 with one. */
+  emergencyMonths: number | null;
+  availableOverride: number | null;
+}
+
+export interface PlanAlert {
+  kind: "idle_cash" | "cash_yield" | "promo_ending";
+  title: string;
+  message: string;
+  facts: Fact[];
+}
+
+export interface PlanResponse {
+  result: WaterfallResult;
+  /** Where the monthly amount and the emergency fund numbers come from. */
+  basis: {
+    expectedIncome: number | null;
+    fixed: number;
+    nonMonthly: number;
+    flex: number;
+    /** expectedIncome − fixed − nonMonthly − flex, or null without expected income. */
+    computed: number | null;
+    override: number | null;
+    /** Complete months the averages use. */
+    averagedMonths: string[];
+    essentialMonthly: number;
+    emergencyTarget: number;
+    emergencySaved: number;
+    emergencyBasis: "earmarked" | "savings_accounts";
+    emergencyMonths: number;
+  };
+  limits: { year: number; requestedYear: number; exact: boolean; source: string };
+  settings: PlanSettings;
+  alerts: PlanAlert[];
+  warnings: string[];
+}
+
+export interface GoalView {
+  id: number;
+  name: string;
+  kind: "emergency" | "custom";
+  targetAmount: number;
+  /** Emergency fund only: the target is worked out from essential spending. */
+  targetIsAuto: boolean;
+  targetDate: string | null;
+  priority: number;
+  allocations: { accountId: number; accountName: string; amount: number }[];
+  progress: GoalProgress;
+  /** What the plan puts toward this goal each month right now. */
+  plannedMonthly: number;
+  emergency?: { months: number; essentialMonthly: number; autoTarget: number; basis: "earmarked" | "savings_accounts" };
+}
+
+export interface DebtView {
+  id: number;
+  name: string;
+  type: string;
+  balance: number;
+  apr: number;
+  aprMissing: boolean;
+  minPayment: number;
+  minimumEstimated: boolean;
+  promoApr: number | null;
+  promoEnds: string | null;
+  paysInFull: boolean;
+}
+
+export interface DebtsResponse {
+  debts: DebtView[];
+  /** Extra per month used for the payoff plans. */
+  extra: number;
+  /** What the plan currently puts toward debt each month. */
+  suggestedExtra: number;
+  start: string;
+  /** null when there's no debt to pay down. */
+  comparison: StrategyComparison | null;
+}
+
+export interface BudgetSettings {
+  expectedIncome: number | null;
+  plannedSavings: number;
+  fundStart: string | null;
+}
+
+export interface BudgetResponse {
+  budget: BudgetMonth;
+  settings: BudgetSettings;
+  today: string;
+}
+
+export interface BudgetSuggestionsResponse {
+  expectedIncome: number | null;
+  budgets: { categoryId: number; name: string; budgetType: BudgetType; amount: number; current: number | null }[];
+  basedOnMonths: string[];
+}
+
+export interface CashFlowResponse {
+  /** The last entry is the current, unfinished month. */
+  months: CashFlowMonth[];
+  averages: { income: number; spending: number; net: number; savingsRate: number | null; movedToSavings: number };
+}
+
+export interface TrendsResponse {
+  months: string[];
+  rows: {
+    categoryId: number | null;
+    name: string;
+    group: string;
+    budgetType: BudgetType | "uncategorized";
+    /** Spending per month as positive amounts (income rows: money in). */
+    values: number[];
+    /** Average over complete months. */
+    average: number;
+  }[];
+}
+
+export interface RecurringView extends RecurringSeries {
+  accountName: string;
+  categoryName: string | null;
+  /** Money moving between your own accounts (card payments, savings). Not a bill. */
+  isTransfer: boolean;
+  ignored: boolean;
+}
+
+export interface RecurringResponse {
+  series: RecurringView[];
+  /** Expected charges and deposits over the next 45 days (active, not ignored). */
+  upcoming: (UpcomingItem & { accountName: string; categoryName: string | null; isTransfer: boolean })[];
+  today: string;
+}
+
+export interface NetWorthResponse {
+  points: NetWorthPoint[];
+  /** Change in net worth from the previous month's point. */
+  change: number | null;
+}
 
 export type { CsvMapping, DateOrder, RowError, RuleActions, RuleMatch };
 
@@ -48,6 +199,11 @@ export interface AccountView {
   interestRatePct: number | null;
   isClosed: boolean;
   isLiability: boolean;
+  minimumPayment: number | null;
+  promoRatePct: number | null;
+  promoEnds: string | null;
+  /** Effective value: credit cards default to paid in full. */
+  paysInFull: boolean;
   /** Latest snapshot plus posted transactions after it. */
   balance: number;
   balanceAsOf: string | null;

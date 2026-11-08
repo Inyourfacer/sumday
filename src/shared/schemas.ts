@@ -145,18 +145,41 @@ export function defaultTaxTreatment(type: AccountType): TaxTreatment {
   return "taxable";
 }
 
-export const accountInputSchema = z.object({
+// Field rules shared by create and update. Defaults are added only for create:
+// zod's .partial() keeps defaults, which would make an update that sends one
+// field silently reset the others.
+const accountFields = {
   name: z.string().trim().min(1, "Enter a name.").max(80),
-  institution: z.string().trim().max(80).default(""),
+  institution: z.string().trim().max(80),
   type: z.enum(ACCOUNT_TYPES),
-  taxTreatment: z.enum(TAX_TREATMENTS).optional(),
+  taxTreatment: z.enum(TAX_TREATMENTS),
   /** null = joint. */
-  ownerPersonId: id.nullable().default(null),
+  ownerPersonId: id.nullable(),
   /** APR for debts, APY for cash. */
-  interestRatePct: z.number().min(0).max(100).nullable().default(null),
-  isClosed: z.boolean().default(false),
+  interestRatePct: z.number().min(0).max(100).nullable(),
+  isClosed: z.boolean(),
+  /** Debts: required minimum payment per month. */
+  minimumPayment: nonNegCents.nullable(),
+  /** Debts: intro APR and the date it ends. */
+  promoRatePct: z.number().min(0).max(100).nullable(),
+  promoEnds: isoDate.nullable(),
+  /** Credit cards: paid in full every month (null = default for the type). */
+  paysInFull: z.boolean().nullable(),
+};
+export const accountInputSchema = z.object({
+  name: accountFields.name,
+  institution: accountFields.institution.default(""),
+  type: accountFields.type,
+  taxTreatment: accountFields.taxTreatment.optional(),
+  ownerPersonId: accountFields.ownerPersonId.default(null),
+  interestRatePct: accountFields.interestRatePct.default(null),
+  isClosed: accountFields.isClosed.default(false),
+  minimumPayment: accountFields.minimumPayment.default(null),
+  promoRatePct: accountFields.promoRatePct.default(null),
+  promoEnds: accountFields.promoEnds.default(null),
+  paysInFull: accountFields.paysInFull.default(null),
 });
-export const accountPatchSchema = accountInputSchema.partial();
+export const accountPatchSchema = z.object(accountFields).partial();
 
 export const balanceInputSchema = z.object({ date: isoDate, balance: cents });
 
@@ -172,13 +195,19 @@ export const BUDGET_TYPE_LABELS: Record<BudgetType, string> = {
   transfer: "Transfer",
 };
 
-export const categoryInputSchema = z.object({
+const categoryFields = {
   name: z.string().trim().min(1, "Enter a name.").max(60),
-  group: z.string().trim().max(60).default(""),
+  group: z.string().trim().max(60),
   budgetType: z.enum(BUDGET_TYPES),
-  isEssential: z.boolean().default(false),
+  isEssential: z.boolean(),
+};
+export const categoryInputSchema = z.object({
+  ...categoryFields,
+  group: categoryFields.group.default(""),
+  isEssential: categoryFields.isEssential.default(false),
 });
-export const categoryPatchSchema = categoryInputSchema.partial();
+// No defaults here: see accountFields.
+export const categoryPatchSchema = z.object(categoryFields).partial();
 
 // ---------- Rules ----------
 
@@ -242,6 +271,67 @@ export const transactionQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 export const linkTransferSchema = z.object({ ids: z.tuple([id, id]) });
+
+// ---------- Budget ----------
+
+export const monthKey = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use a month like 2026-11.");
+
+export const budgetSettingsSchema = z.object({
+  /** Expected monthly take-home income. null = not set (no Flex budget yet). */
+  expectedIncome: cents.refine((v) => v >= 0, "Can't be negative.").nullable().optional(),
+  /** Monthly amount you plan to move to savings and investments. */
+  plannedSavings: cents.refine((v) => v >= 0, "Can't be negative.").optional(),
+  /** First month of the non-monthly sinking funds. */
+  fundStart: monthKey.nullable().optional(),
+});
+
+export const categoryBudgetsSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        categoryId: id,
+        /** Monthly for Fixed, yearly for Non-monthly. null removes the budget. */
+        amount: cents.refine((v) => v >= 0, "Can't be negative.").nullable(),
+        startingBalance: cents.optional(),
+      }),
+    )
+    .max(500),
+});
+
+export const budgetQuerySchema = z.object({ month: monthKey.optional() });
+export const monthsQuerySchema = z.object({ months: z.coerce.number().int().min(1).max(60).default(12) });
+export const recurringIgnoreSchema = z.object({ key: z.string().min(1).max(500) });
+
+// ---------- Goals & plan ----------
+
+export const goalInputSchema = z.object({
+  name: z.string().trim().min(1, "Enter a name.").max(80),
+  targetAmount: cents.refine((v) => v > 0, "Enter a target above $0."),
+  targetDate: isoDate.nullable().default(null),
+});
+export const goalPatchSchema = z.object({
+  name: z.string().trim().min(1, "Enter a name.").max(80).optional(),
+  /** null on the emergency fund means "work it out from spending". */
+  targetAmount: cents.refine((v) => v > 0, "Enter a target above $0.").nullable().optional(),
+  targetDate: isoDate.nullable().optional(),
+});
+export const goalAllocationsSchema = z.object({
+  items: z.array(z.object({ accountId: id, amount: cents.refine((v) => v >= 0, "Can't be negative.") })).max(100),
+});
+export const goalReorderSchema = z.object({ ids: z.array(id) });
+
+export const planSettingsSchema = z.object({
+  steps: z.array(z.object({ id: z.string(), enabled: z.boolean() })).optional(),
+  starterAmount: cents.refine((v) => v >= 0, "Can't be negative.").optional(),
+  highInterestApr: z.number().min(0).max(100).optional(),
+  /** null = 3 months with two earners, 6 with one. */
+  emergencyMonths: z.number().min(1).max(24).nullable().optional(),
+  /** Override the monthly amount to allocate. null = work it out from the budget. */
+  availableOverride: cents.refine((v) => v >= 0, "Can't be negative.").nullable().optional(),
+});
+export const debtQuerySchema = z.object({
+  extra: z.coerce.number().int().min(0).max(100_000_000).optional(),
+});
 
 // ---------- Imports ----------
 

@@ -148,15 +148,31 @@ savings (planned vs actual).
 ### 5.2 Other spending features
 
 - **Recurring detection:** a payee charged ≥ 3 times at a regular interval
-  (weekly, monthly or yearly, ± 3 days) with an amount within ± 10% becomes a
-  proposed recurring item. This drives the bills calendar and the
-  new-subscription alert.
+  (weekly, every 2 weeks, twice a month, monthly, quarterly; yearly after 2)
+  with an amount within ± 10% becomes a recurring item. Bills whose amount
+  varies (utilities) still count when the timing is regular, and are marked
+  "about". A regular charge hidden among irregular ones from the same payee
+  (a subscription from a store you also shop at) is found by grouping similar
+  amounts. A series overdue by more than half a period is shown as stopped.
+  You can mark any series "not recurring". This drives the bills calendar and
+  the new-subscription alert. Transfers (card payments, savings moves) appear
+  on the calendar but don't count as bills, since the card's own charges
+  already do.
 - **Trends:** spending by category and group over 12 months, and average
   monthly spending by category.
-- **Cash flow & savings rate:** savings rate = (income − spending) ÷ income,
-  and also as (contributions to savings/investing) ÷ gross income.
-- **Net worth:** assets − liabilities over time, from transactions, balance
-  snapshots and holding values.
+- **Cash flow & savings rate:** savings rate = (income − spending) ÷ income.
+  "Moved to savings" counts linked transfers from everyday accounts into
+  savings, investment and retirement accounts (minus money moved back).
+  Uncategorized spending counts against Flex until it's categorized.
+  Averages use complete months only, starting from the first month with data.
+- **Net worth:** assets − liabilities at each month end. An account's balance
+  on a date comes from its nearest balance snapshot: the latest one before
+  the date plus later transactions, or the next one after it minus the
+  transactions in between (so a statement balance also corrects earlier
+  months). Before an account's first data point it isn't counted.
+- **Budget suggestions:** Fixed bills and expected income from the average of
+  the last three complete months; Non-monthly from the last 12 months,
+  annualized when there's less history. Rounded to whole dollars.
 
 ## 6. Savings goals
 
@@ -188,9 +204,14 @@ savings (planned vs actual).
 
 ### 8.1 How it works
 
-Each month Sumday computes your **surplus**:
+Each month Sumday computes the money **available** to put to work:
 
-> surplus = expected income − fixed − non-monthly set-aside − flex budget − debt minimums
+> available = expected income − fixed − non-monthly set-aside − average Flex spending
+
+Fixed and Non-monthly use your budgets where set, otherwise the average of
+the last three complete months; Flex always uses the actual average, so the
+plan reflects how you really spend. Debt minimums are assumed to be inside
+Fixed bills (loan payments) or card payments. You can override the amount.
 
 then pours it through an ordered list of **steps**. Each step has a **target**
 and a **fill rule**. A step takes as much as it needs up to its target, and the
@@ -220,6 +241,14 @@ Notes:
   and shows the % to set.
 - Steps 1 and 4 are skipped once they're full. They switch back on if the cash
   balance falls below target.
+- The emergency fund is what you've earmarked for it, or, with nothing
+  earmarked, your savings accounts minus what other goals have claimed.
+- Credit cards default to "paid in full every month" and don't count as debt
+  to pay down; untick that on cards that carry a balance. Without a stated
+  minimum payment, 2% of the balance (at least $25) is assumed.
+- Contribution limits come from `data/limits/<year>.json`. When the current
+  year's limits aren't published yet, the latest year is used and the plan
+  says so.
 
 ### 8.3 What a recommendation looks like
 
