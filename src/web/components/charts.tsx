@@ -428,3 +428,144 @@ export function FanChart({
     </div>
   );
 }
+
+export interface MultiSeries {
+  name: string;
+  /** One value per x position (null = no value there). */
+  values: (number | null)[];
+}
+
+/**
+ * Up to four series on one axis (categorical slots 1–4, in order). Legend
+ * above, the latest value labeled at each line's end, and a crosshair tooltip
+ * listing every series at the hovered x.
+ */
+export function MultiLineChart({ xLabels, series, height = 260, label }: { xLabels: readonly string[]; series: readonly MultiSeries[]; height?: number; label: string }) {
+  const [ref, width] = useWidth<HTMLDivElement>();
+  const [active, setActive] = useState<number | null>(null);
+  const shownSeries = series.slice(0, 4);
+  const all = shownSeries.flatMap((s) => s.values.filter((v): v is number => v !== null));
+  if (xLabels.length === 0 || all.length === 0) return <div ref={ref} className="chart empty-chart" />;
+
+  const ticks = niceTicks(Math.min(0, ...all), Math.max(...all));
+  const lo = ticks[0]!;
+  const hi = ticks.at(-1)!;
+  const pad = { ...PAD, right: 72 };
+  const plotW = Math.max(0, width - pad.left - pad.right);
+  const plotH = height - pad.top - pad.bottom;
+  const n = xLabels.length;
+  const last = n - 1;
+  const x = (i: number) => pad.left + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const y = (v: number) => pad.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
+  const path = (values: readonly (number | null)[]) => {
+    let d = "";
+    let pen = false;
+    values.forEach((v, i) => {
+      if (v === null) {
+        pen = false;
+        return;
+      }
+      d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)} `;
+      pen = true;
+    });
+    return d.trim();
+  };
+  const stride = labelStride(n, plotW);
+  const lastValue = (s: MultiSeries) => {
+    for (let i = s.values.length - 1; i >= 0; i--) if (s.values[i] !== null) return { i, v: s.values[i]! };
+    return null;
+  };
+  // End labels: nudge apart so they don't overlap.
+  const ends = shownSeries
+    .map((s, k) => ({ k, end: lastValue(s) }))
+    .filter((e): e is { k: number; end: { i: number; v: number } } => e.end !== null)
+    .map((e) => ({ ...e, top: y(e.end.v) }))
+    .sort((a, b) => a.top - b.top);
+  for (let j = 1; j < ends.length; j++) ends[j]!.top = Math.max(ends[j]!.top, ends[j - 1]!.top + 16);
+  // Keep them inside the plot: if the stack runs off the bottom, push it back up.
+  const floor = pad.top + plotH;
+  for (let j = ends.length - 1; j >= 0; j--) ends[j]!.top = Math.min(ends[j]!.top, j === ends.length - 1 ? floor : ends[j + 1]!.top - 16);
+
+  const onMove = (e: PointerEvent<SVGSVGElement>) => {
+    const px = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    setActive(Math.min(last, Math.max(0, Math.round(((px - pad.left) / (plotW || 1)) * last))));
+  };
+  const onKey = (e: KeyboardEvent<SVGSVGElement>) => {
+    if (e.key === "ArrowLeft") setActive((a) => Math.max(0, (a ?? last) - 1));
+    else if (e.key === "ArrowRight") setActive((a) => Math.min(last, (a ?? last) + 1));
+    else return;
+    e.preventDefault();
+  };
+
+  return (
+    <>
+      <div className="legend" aria-hidden>
+        {shownSeries.map((s, k) => (
+          <span key={s.name}>
+            <i className={`key s${k + 1}`} /> {s.name}
+          </span>
+        ))}
+      </div>
+      <div ref={ref} className="chart" style={{ height }}>
+        {width > 0 && (
+          <svg
+            width={width}
+            height={height}
+            role="img"
+            aria-label={`${label}. ${shownSeries.map((s) => `${s.name}: ${lastValue(s) ? formatMoney(lastValue(s)!.v, { cents: false }) : "none"} at ${xLabels[lastValue(s)?.i ?? last]}`).join("; ")}.`}
+            tabIndex={0}
+            onPointerMove={onMove}
+            onPointerLeave={() => setActive(null)}
+            onFocus={() => setActive(last)}
+            onBlur={() => setActive(null)}
+            onKeyDown={onKey}
+          >
+            {ticks.map((t) => (
+              <g key={t}>
+                <line className="grid" x1={pad.left} x2={width - pad.right} y1={y(t)} y2={y(t)} />
+                <text className="tick" x={pad.left - 8} y={y(t)} dy="0.32em" textAnchor="end">
+                  {compactMoney(t)}
+                </text>
+              </g>
+            ))}
+            <line className="baseline" x1={pad.left} x2={width - pad.right} y1={y(Math.max(lo, 0))} y2={y(Math.max(lo, 0))} />
+            {xLabels.map((l, i) =>
+              i % stride === last % stride ? (
+                <text key={l} className="tick" x={x(i)} y={height - 8} textAnchor={i === last ? "end" : "middle"}>
+                  {l}
+                </text>
+              ) : null,
+            )}
+            {shownSeries.map((s, k) => (
+              <path key={s.name} className={`line s${k + 1}`} d={path(s.values)} />
+            ))}
+            {active !== null && <line className="crosshair" x1={x(active)} x2={x(active)} y1={pad.top} y2={pad.top + plotH} />}
+            {active !== null &&
+              shownSeries.map((s, k) =>
+                s.values[active] != null ? <circle key={s.name} className={`dot s${k + 1}`} cx={x(active)} cy={y(s.values[active]!)} r={4.5} /> : null,
+              )}
+          </svg>
+        )}
+        {width > 0 &&
+          active === null &&
+          ends.map((e) => (
+            <span key={e.k} className="end-label multi" style={{ left: x(e.end.i) + 8, top: e.top - 9 }}>
+              <i className={`key s${e.k + 1}`} />
+              {compactMoney(e.end.v)}
+            </span>
+          ))}
+        {active !== null && (
+          <div className="tooltip" style={{ left: Math.min(Math.max(x(active) - 90, 0), Math.max(0, width - 200)), top: 0 }}>
+            <span className="tooltip-title">{xLabels[active]}</span>
+            {shownSeries.map((s, k) => (
+              <span key={s.name} className="tooltip-row">
+                <i className={`key s${k + 1}`} />
+                {s.name}: <strong>{s.values[active] == null ? "–" : formatMoney(s.values[active]!, { cents: false })}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}

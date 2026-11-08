@@ -527,8 +527,10 @@ export interface MonthlyReport {
     nonMonthly: { budget: number; actual: number };
     savings: { planned: number; actual: number };
   };
+  /** How many earlier months the averages use (up to 12). */
+  averageMonths: number;
   topCategories: { name: string; budgetType: string; actual: number; average: number; change: number }[];
-  /** Biggest moves against the 12-month average. */
+  /** Biggest moves against the average. */
   changes: { name: string; budgetType: string; actual: number; average: number; change: number }[];
   newRecurring: { payee: string; amount: number; frequency: string; accountName: string }[];
   netWorth: { start: number; end: number; change: number; fromCashFlow: number; marketAndOther: number; debtPaidDown: number } | null;

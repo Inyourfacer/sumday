@@ -140,8 +140,11 @@ export function computeAlerts(db: Db, settings = getAlertSettings(db)): AlertVie
     }
     return typical.get(categoryId)!;
   };
+  // Regular bills (rent, a car payment) are expected, however large.
+  const regular = new Set(rec.series.filter((x) => x.active && !x.ignored).flatMap((x) => x.transactionIds));
   let large = 0;
   for (const t of recentTx) {
+    if (regular.has(t.id)) continue;
     const amount = -t.amount;
     const usual = t.categoryId === null ? null : typicalFor(t.categoryId);
     const byMultiple = usual !== null && amount >= 10_000 && amount > usual * settings.largeMultiple;

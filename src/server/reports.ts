@@ -24,17 +24,21 @@ export function buildReport(db: Db, month: string): MonthlyReport {
   const { budget: b } = budgetFor(db, month);
 
   // Categories: this month against the 12 months before it.
-  const history = monthRange(nextMonth(month, -12), prevMonth(month));
-  const actuals = loadActuals(db, history[0]!, month);
+  // Only months with data count toward the average.
+  const first = (db.prepare("SELECT MIN(date) AS d FROM transactions WHERE status = 'posted'").get() as { d: string | null }).d;
+  const from = first && monthOf(first) > nextMonth(month, -12) ? monthOf(first) : nextMonth(month, -12);
+  const history = from <= prevMonth(month) ? monthRange(from, prevMonth(month)) : [];
+  const actuals = loadActuals(db, history[0] ?? month, month);
   const categories = loadBudgetCategories(db)
     .filter((c) => c.budgetType !== "transfer" && c.budgetType !== "income")
     .map((c) => {
       const byMonth = actuals.get(c.id);
       const actual = -(byMonth?.get(month) ?? 0);
-      const average = Math.round(-history.reduce((s, m) => s + (byMonth?.get(m) ?? 0), 0) / history.length);
+      const average = history.length ? Math.round(-history.reduce((s, m) => s + (byMonth?.get(m) ?? 0), 0) / history.length) : 0;
       return { name: c.name, budgetType: c.budgetType, actual, average, change: actual - average };
     })
     .filter((c) => c.actual !== 0 || c.average !== 0);
+  const averageMonths = history.length;
   const top = [...categories].sort((x, y) => y.actual - x.actual).slice(0, 8);
   const changes = categories
     .filter((c) => c.average > 0 && Math.abs(c.change) >= 2_500)
@@ -114,6 +118,7 @@ export function buildReport(db: Db, month: string): MonthlyReport {
       nonMonthly: { budget: b.nonMonthly.setAside, actual: b.nonMonthly.actual },
       savings: b.savings,
     },
+    averageMonths,
     topCategories: top,
     changes,
     newRecurring,

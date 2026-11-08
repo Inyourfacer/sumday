@@ -64,6 +64,12 @@ describe("alerts", () => {
     expect(r.alerts.filter((a) => a.kind === "new_subscription").map((a) => a.title)).not.toContain("New monthly charge: Insurer");
   });
 
+  it("doesn't call a regular bill a large charge", async () => {
+    for (const back of [120, 90, 60, 30, 0]) await tx(checking.id, addDays(now, -back), -215_000, "Oak Property Mgmt");
+    const r = await ok<AlertsResponse>("GET", "/api/alerts");
+    expect(kinds(r)).not.toContain("large_transaction");
+  });
+
   it("warns about low cash, stale accounts and intro rates ending", async () => {
     await ok("POST", `/api/accounts/${checking.id}/balances`, { date: now, balance: 20_000 });
     const old = await ok<AccountView>("POST", "/api/accounts", { name: "Old savings", type: "savings" });

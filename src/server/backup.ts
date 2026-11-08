@@ -29,7 +29,8 @@ export function listBackups(dir: string | null): BackupView[] {
       const s = statSync(join(dir, n));
       return { name: n, date: NAME.exec(n)![1]!, size: s.size, createdAt: s.mtime.toISOString() };
     })
-    .sort((a, b) => (a.name < b.name ? 1 : -1));
+    // Newest first: by day, then by when the file was written.
+    .sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1) : a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.name < b.name ? 1 : -1));
 }
 
 /** Make a backup now. `daily` names it by date only, so there's one per day. */

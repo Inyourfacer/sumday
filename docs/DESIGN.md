@@ -291,7 +291,12 @@ also send them as desktop notifications.
 | Goal behind | Projected shortfall at target date |
 | Stale data | An account hasn't been imported in 14+ days |
 
-All thresholds are editable in Plan settings.
+All thresholds are editable, and each kind can be turned off (Settings →
+Alerts). Each alert has a stable key (for example the bill and the date of
+the changed charge, or the month for budget pace), so dismissing hides it
+until the situation changes. Regular bills from a recurring series are never
+"large charges". Desktop notifications use the browser's Notification API
+while Sumday is open; each alert notifies once.
 
 ## 10. Investments
 
@@ -415,15 +420,29 @@ to cover spending until the last one retires.
   stops working), a home purchase (down payment, new mortgage, changed fixed
   costs), a one-off expense or windfall, a different allocation, or a different
   spending level.
-- Scenarios run through the **same engines**. Compare up to 3 side by side:
-  success probability, median net worth at retirement, sustainable spending,
-  and the waterfall's monthly output.
-- You can **promote** a scenario to become the base plan.
+- Scenarios run through the **same engines** (the retirement simulation, with
+  the same seed, so differences come from the changes and not from luck).
+  Compare up to 3 side by side with your plan today: success probability,
+  retirement year, spending, sustainable spending at your target, extra
+  saving, the median portfolio at retirement and at the end, and the median
+  portfolio by year on one chart.
+- Overrides are applied before simulating: retirement ages and income change
+  the people; extra saving goes to the taxable bucket; a home purchase is a
+  down payment that year, plus the new housing cost out of savings while
+  working and as spending in retirement; one-time amounts move money in or
+  out of the taxable bucket.
+- You can **promote** a scenario to become the base plan. Ages, income and
+  the mix are written to the household and investment target; everything
+  else is kept as a retirement **event** that the projection applies, listed
+  on the Retirement page with a remove button.
 
 ## 13. Monthly review report
 
 The report is generated on the 1st of each month for the prior month, and on
-demand. It's an HTML page stored locally and printable to PDF. It covers:
+demand. Its numbers are stored when it's made (so later edits don't rewrite
+history) and shown as a page with print styles, so the browser can print it
+or save it as a PDF. Category averages use up to 12 earlier months, counting
+only months with data. It covers:
 
 1. Income, spending and savings rate vs budget (Fixed / Flex / Non-monthly).
 2. Top categories, biggest changes vs the 12-month average, and new recurring
@@ -461,10 +480,14 @@ sumday/
   tested with a seeded RNG and with a fixed "replay one history" mode.
 - **Run locally** with one command (`npm start`), which serves the UI and API
   on `localhost` and starts the scheduler.
-- **Scheduler:** in-process (node-cron). Jobs are idempotent and catch up if
-  the machine was off.
-- **Backups:** a daily copy of the SQLite file to a folder you choose (e.g. a
-  synced drive), keeping the last 30. One-click export to CSV/JSON.
+- **Scheduler:** in-process timers (prices every 6 hours; an hourly check for
+  the daily backup and last month's report). Jobs are idempotent and catch up
+  if the machine was off.
+- **Backups:** a daily copy of the SQLite file (SQLite's online backup, safe
+  while running) to `var/backups` or `SUMDAY_BACKUP_DIR` (e.g. a synced
+  drive), keeping the last 30, plus "back up now". Export everything to JSON,
+  or transactions to CSV (cells that look like spreadsheet formulas are
+  escaped).
 - **Security:** binds to `127.0.0.1` by default. Optional passcode. API keys
   for price providers are stored in a local `.env` file, never in the database
   export.

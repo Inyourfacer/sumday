@@ -7,12 +7,13 @@ your next dollar, using rules and math you can inspect.
 - [Design](docs/DESIGN.md)
 - [Build plan](docs/PLAN.md)
 
-> **Status:** Phases 1–5 are done: household setup, accounts, CSV/OFX import
-> with review and undo, categories, rules, transfer matching, the Fixed /
-> Flex / Non-monthly budget, cash flow, recurring bills, net worth, savings
-> goals, debt payoff, **Next best moves**, investments (holdings, daily
-> prices, mix vs target, rebalancing, fees), and a **Monte Carlo retirement
-> projection**. Scenarios, alerts and the monthly report come next.
+> **Status:** All six phases are done: household setup, accounts, CSV/OFX
+> import with review and undo, categories, rules, transfer matching, the
+> Fixed / Flex / Non-monthly budget, cash flow, recurring bills, net worth,
+> savings goals, debt payoff, **Next best moves**, investments (holdings,
+> daily prices, mix vs target, rebalancing, fees), a **Monte Carlo retirement
+> projection**, what-if **scenarios**, **alerts**, a printable **monthly
+> report**, daily backups and export.
 
 ## Using it
 
@@ -55,6 +56,29 @@ your next dollar, using rules and math you can inspect.
    your target. Add Social Security estimates (ssa.gov/myaccount) in
    Settings → Household, and adjust retirement spending on the page.
 
+10. **Scenarios**: "what if" versions of your plan: retire at a different
+    age, a change in pay, saving more, spending more or less in retirement,
+    an inheritance or a big expense, a home purchase, a different mix. Tick up
+    to three to see them side by side with your plan today. **Make this my
+    plan** applies one: ages, pay and the mix update your settings; the rest
+    shows on Retirement as a change you can remove.
+
+11. **Alerts** on the dashboard: Flex spending over budget or ahead of pace,
+    a bill that changed, a new subscription, a large charge, checking running
+    low before payday, investment drift, an intro rate ending, a goal behind,
+    an account not updated in a while. Dismiss any of them; tune thresholds,
+    turn kinds off, or get desktop notifications in Settings → Alerts.
+
+12. **Reports**: on the 1st, Sumday writes a review of the month before:
+    budget vs actual, where the money went, net worth change, goals, debt,
+    retirement chance (and how it moved), next best moves and data health.
+    Print it or save it as a PDF from the report page.
+
+13. **Backups & export**: a copy of the database is made every day Sumday
+    runs (the newest 30 are kept in `var/backups/`), plus **Back up now**.
+    Export all your data as JSON or your transactions as CSV. To restore,
+    stop Sumday and copy a backup over `var/sumday.db`.
+
 Contribution limits live in `data/limits/<year>.json`; market history in
 `data/returns/` and the IRS required-minimum table in `data/rmd/`, each with
 its source. Add next year's file
@@ -79,7 +103,10 @@ TIINGO_API_KEY=your-key-here
 Without a key everything else works; prices come from your imported files or
 what you type in.
 
-Your data lives in `var/sumday.db` (a single SQLite file, ignored by git).
+Your data lives in `var/sumday.db` (a single SQLite file, ignored by git),
+with daily backups in `var/backups/` (`SUMDAY_BACKUP_DIR` to move them).
+Background jobs run while Sumday is running: prices every 6 hours, the daily
+backup, and last month's report on the 1st (or the next time it starts).
 To change the location or port, copy `.env.example` to `.env` and edit it.
 Sumday only listens on `127.0.0.1`, so it can't be reached from other machines.
 

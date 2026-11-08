@@ -314,6 +314,33 @@ export function RetirementPage() {
         </dl>
       </section>
 
+      {d.events.length > 0 && (
+        <section className="panel">
+          <div className="group-head">
+            <h2>Changes from scenarios</h2>
+            <Link to="/scenarios">Scenarios →</Link>
+          </div>
+          <ul className="lines">
+            {d.events.map((e, idx) => (
+              <li key={`${e}-${idx}`}>
+                <span>{e}</span>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={async () => {
+                    await api("DELETE", `/api/retirement/events/${idx}`);
+                    notifyDataChanged();
+                    void data.reload();
+                  }}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {!onTrack && (change.extraMonthlySavings !== null || change.retireLaterYears !== null || change.spendLessPerYear !== null) && (
         <section className="panel">
           <h2>Smallest changes that reach {pct(target)}</h2>
