@@ -204,9 +204,14 @@ savings (planned vs actual).
 
 ### 8.1 How it works
 
-Each month Sumday computes your **surplus**:
+Each month Sumday computes the money **available** to put to work:
 
-> surplus = expected income − fixed − non-monthly set-aside − flex budget − debt minimums
+> available = expected income − fixed − non-monthly set-aside − average Flex spending
+
+Fixed and Non-monthly use your budgets where set, otherwise the average of
+the last three complete months; Flex always uses the actual average, so the
+plan reflects how you really spend. Debt minimums are assumed to be inside
+Fixed bills (loan payments) or card payments. You can override the amount.
 
 then pours it through an ordered list of **steps**. Each step has a **target**
 and a **fill rule**. A step takes as much as it needs up to its target, and the
@@ -236,6 +241,14 @@ Notes:
   and shows the % to set.
 - Steps 1 and 4 are skipped once they're full. They switch back on if the cash
   balance falls below target.
+- The emergency fund is what you've earmarked for it, or, with nothing
+  earmarked, your savings accounts minus what other goals have claimed.
+- Credit cards default to "paid in full every month" and don't count as debt
+  to pay down; untick that on cards that carry a balance. Without a stated
+  minimum payment, 2% of the balance (at least $25) is assumed.
+- Contribution limits come from `data/limits/<year>.json`. When the current
+  year's limits aren't published yet, the latest year is used and the plan
+  says so.
 
 ### 8.3 What a recommendation looks like
 

@@ -7,10 +7,10 @@ your next dollar, using rules and math you can inspect.
 - [Design](docs/DESIGN.md)
 - [Build plan](docs/PLAN.md)
 
-> **Status:** Phases 1–2 are done: household setup, accounts, CSV/OFX import
+> **Status:** Phases 1–3 are done: household setup, accounts, CSV/OFX import
 > with review and undo, categories, rules, transfer matching, the Fixed /
-> Flex / Non-monthly budget, cash flow and trends, recurring bills, and net
-> worth history. Goals, debt and recommendations come next.
+> Flex / Non-monthly budget, cash flow, recurring bills, net worth, savings
+> goals, debt payoff plans and **Next best moves**. Investments come next.
 
 ## Using it
 
@@ -33,6 +33,15 @@ your next dollar, using rules and math you can inspect.
 6. **Cash flow**, **Recurring** and the net worth chart on **Accounts** fill in
    as history builds up. Add a starting balance on each account so net worth
    history is accurate.
+7. **Next best moves** shows where this month's spare money should go, step
+   by step: emergency fund, employer match, high-interest debt, HSA, IRA,
+   workplace plan, goals, then investing. Each move says why, and "The
+   numbers behind it" shows the math. Reorder or turn off steps in Plan
+   settings. For debts, add the APR and minimum payment on each account, and
+   untick "paid in full" on cards that carry a balance.
+
+Contribution limits live in `data/limits/<year>.json`. Add next year's file
+when the IRS announces it (usually in November).
 
 ## Running it
 

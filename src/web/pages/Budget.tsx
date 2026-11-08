@@ -415,7 +415,7 @@ export function BudgetPage() {
         </p>
         <p className="small">
           This month you kept <strong>{formatMoney(b.totals.net, { cents: false })}</strong> of your income (savings rate{" "}
-          <strong>{pct(b.totals.savingsRate)}</strong>).
+          <strong>{pct(b.totals.savingsRate)}</strong>). <Link to="/plan">Where should spare money go? →</Link>
         </p>
       </section>
 

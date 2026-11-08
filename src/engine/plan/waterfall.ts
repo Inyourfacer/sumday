@@ -138,7 +138,7 @@ function usd(c: Cents): string {
 }
 
 function pct(n: number): string {
-  return `${Math.round(n * 10) / 10}%`;
+  return `${Math.round(n * 100) / 100}%`;
 }
 
 /** Employer match per year for contributing `contribPct` of pay. */

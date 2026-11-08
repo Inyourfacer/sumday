@@ -35,7 +35,7 @@ imported, categorized and deduplicated.
 
 **Done when:** you can run a month on the Flex budget and see net worth.
 
-## Phase 3: Goals, debt, waterfall
+## Phase 3: Goals, debt, waterfall ✅
 - Goals with earmarking, required monthly amounts and status; the emergency
   fund goal.
 - Debt payoff engine (avalanche/snowball, schedule, comparison).

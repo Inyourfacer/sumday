@@ -3,6 +3,9 @@ import type { HealthResponse, SummaryResponse } from "../shared/api.ts";
 import { useApi, useDataChanged } from "./api.ts";
 import { AccountDetailPage, AccountsPage } from "./pages/Accounts.tsx";
 import { BudgetPage } from "./pages/Budget.tsx";
+import { DebtPage } from "./pages/Debt.tsx";
+import { GoalsPage } from "./pages/Goals.tsx";
+import { PlanPage } from "./pages/Plan.tsx";
 import { CashFlowPage } from "./pages/CashFlow.tsx";
 import { RecurringPage } from "./pages/Recurring.tsx";
 import { CategoriesPage } from "./pages/Categories.tsx";
@@ -49,6 +52,9 @@ function route(path: string, summary: SummaryResponse | undefined): ReactNode {
   if ((m = matchPath("/accounts/:id", path))) return <AccountDetailPage key={m.id} id={Number(m.id)} />;
   if (path === "/transactions") return <TransactionsPage />;
   if (path === "/budget") return <BudgetPage />;
+  if (path === "/plan") return <PlanPage />;
+  if (path === "/goals") return <GoalsPage />;
+  if (path === "/debt") return <DebtPage />;
   if (path === "/cashflow") return <CashFlowPage />;
   if (path === "/recurring") return <RecurringPage />;
   if (path === "/import") return <ImportPage />;
@@ -82,14 +88,15 @@ export function App() {
   const s = summary.data;
   const main: NavItem[] = [
     { to: "/", label: "Dashboard" },
+    { to: "/plan", label: "Next best moves" },
     { to: "/accounts", label: "Accounts" },
     { to: "/transactions", label: "Transactions", badge: s?.uncategorizedCount },
     { to: "/import", label: "Import", badge: s?.stagedImportCount },
     { to: "/budget", label: "Budget" },
     { to: "/cashflow", label: "Cash flow" },
     { to: "/recurring", label: "Recurring" },
-    { to: "/goals", label: "Goals", phase: 3 },
-    { to: "/debt", label: "Debt", phase: 3 },
+    { to: "/goals", label: "Goals" },
+    { to: "/debt", label: "Debt" },
     { to: "/investments", label: "Investments", phase: 4 },
     { to: "/retirement", label: "Retirement", phase: 5 },
     { to: "/scenarios", label: "Scenarios", phase: 6 },

@@ -1,5 +1,5 @@
 import { addDays } from "../../engine/dates.ts";
-import type { AccountView, BudgetResponse, NetWorthResponse, RecurringResponse, SummaryResponse } from "../../shared/api.ts";
+import type { AccountView, BudgetResponse, NetWorthResponse, PlanResponse, RecurringResponse, SummaryResponse } from "../../shared/api.ts";
 import { useApi } from "../api.ts";
 import { Meter } from "../components/charts.tsx";
 import { Amount, PageHeader } from "../components/ui.tsx";
@@ -7,7 +7,6 @@ import { formatDate, formatMoney, plural } from "../format.ts";
 import { Link } from "../router.tsx";
 
 const LATER = [
-  { title: "Next best moves", body: "Where this month's surplus should go, and the rule behind each step.", phase: 3 },
   { title: "Retirement", body: "Chance of success across 10,000 simulated futures.", phase: 5 },
 ] as const;
 
@@ -16,6 +15,8 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
   const budget = useApi<BudgetResponse>("/api/budget");
   const networth = useApi<NetWorthResponse>("/api/networth?months=2");
   const recurring = useApi<RecurringResponse>("/api/recurring");
+  const plan = useApi<PlanResponse>("/api/plan");
+  const moves = (plan.data?.result.recommendations ?? []).filter((r) => r.status === "act" || r.status === "partial");
   const b = budget.data?.budget;
   const bills = (recurring.data?.upcoming ?? []).filter((u) => u.amount < 0 && !u.isTransfer && u.date <= addDays(recurring.data!.today, 7));
   const open = (accounts.data ?? []).filter((a) => !a.isClosed);
@@ -63,6 +64,31 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
                 ))}
               </ul>
             </div>
+          )}
+        </section>
+      )}
+
+      {plan.data && (
+        <section className="panel next-moves">
+          <div className="group-head">
+            <h2>Next best moves</h2>
+            <Link to="/plan">Why, and the whole plan →</Link>
+          </div>
+          {plan.data.result.available === null ? (
+            <p className="muted">
+              Set your expected monthly income on the <Link to="/budget">Budget</Link> page to get recommendations.
+            </p>
+          ) : moves.length === 0 ? (
+            <p className="muted">Nothing to move this month: every step is either done or waiting for more room in the budget.</p>
+          ) : (
+            <ol className="mini-moves">
+              {moves.slice(0, 4).map((r) => (
+                <li key={`${r.step}-${r.subject?.id ?? 0}`}>
+                  <span>{r.action}</span>
+                  <strong>{formatMoney(r.amount, { cents: false })}/mo</strong>
+                </li>
+              ))}
+            </ol>
           )}
         </section>
       )}
