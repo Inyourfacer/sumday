@@ -243,6 +243,36 @@ export const transactionQuerySchema = z.object({
 });
 export const linkTransferSchema = z.object({ ids: z.tuple([id, id]) });
 
+// ---------- Budget ----------
+
+export const monthKey = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use a month like 2026-11.");
+
+export const budgetSettingsSchema = z.object({
+  /** Expected monthly take-home income. null = not set (no Flex budget yet). */
+  expectedIncome: cents.refine((v) => v >= 0, "Can't be negative.").nullable().optional(),
+  /** Monthly amount you plan to move to savings and investments. */
+  plannedSavings: cents.refine((v) => v >= 0, "Can't be negative.").optional(),
+  /** First month of the non-monthly sinking funds. */
+  fundStart: monthKey.nullable().optional(),
+});
+
+export const categoryBudgetsSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        categoryId: id,
+        /** Monthly for Fixed, yearly for Non-monthly. null removes the budget. */
+        amount: cents.refine((v) => v >= 0, "Can't be negative.").nullable(),
+        startingBalance: cents.optional(),
+      }),
+    )
+    .max(500),
+});
+
+export const budgetQuerySchema = z.object({ month: monthKey.optional() });
+export const monthsQuerySchema = z.object({ months: z.coerce.number().int().min(1).max(60).default(12) });
+export const recurringIgnoreSchema = z.object({ key: z.string().min(1).max(500) });
+
 // ---------- Imports ----------
 
 export const csvMappingSchema = z.object({

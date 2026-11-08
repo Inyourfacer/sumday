@@ -3,6 +3,7 @@ import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { HealthResponse, SummaryResponse } from "../shared/api.ts";
 import { registerAccountRoutes } from "./accounts.ts";
+import { registerBudgetRoutes } from "./budget.ts";
 import { registerCategoryRoutes } from "./categories.ts";
 import { schemaVersion, type Db } from "./db.ts";
 import { registerHouseholdRoutes, isSetupComplete, setupGaps } from "./household.ts";
@@ -54,6 +55,7 @@ export async function buildApp({ db, webDir, logger = false }: AppOptions): Prom
   registerRuleRoutes(app, db);
   registerTransactionRoutes(app, db);
   registerImportRoutes(app, db);
+  registerBudgetRoutes(app, db);
 
   if (webDir !== undefined && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });

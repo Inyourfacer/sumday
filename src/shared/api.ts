@@ -4,6 +4,68 @@ import type { CsvMapping } from "../engine/import/mapping.ts";
 import type { RowError } from "../engine/import/types.ts";
 import type { RuleActions, RuleMatch } from "../engine/categorize/rules.ts";
 import type { AccountType, BudgetType, Household, Person, TaxTreatment } from "./schemas.ts";
+import type { BudgetMonth, CashFlowMonth } from "../engine/budget/budget.ts";
+import type { NetWorthPoint } from "../engine/budget/networth.ts";
+import type { RecurringSeries, UpcomingItem } from "../engine/budget/recurring.ts";
+
+export type { BudgetMonth, CashFlowMonth, NetWorthPoint, RecurringSeries, UpcomingItem };
+
+export interface BudgetSettings {
+  expectedIncome: number | null;
+  plannedSavings: number;
+  fundStart: string | null;
+}
+
+export interface BudgetResponse {
+  budget: BudgetMonth;
+  settings: BudgetSettings;
+  today: string;
+}
+
+export interface BudgetSuggestionsResponse {
+  expectedIncome: number | null;
+  budgets: { categoryId: number; name: string; budgetType: BudgetType; amount: number; current: number | null }[];
+  basedOnMonths: string[];
+}
+
+export interface CashFlowResponse {
+  /** The last entry is the current, unfinished month. */
+  months: CashFlowMonth[];
+  averages: { income: number; spending: number; net: number; savingsRate: number | null; movedToSavings: number };
+}
+
+export interface TrendsResponse {
+  months: string[];
+  rows: {
+    categoryId: number | null;
+    name: string;
+    group: string;
+    budgetType: BudgetType | "uncategorized";
+    /** Spending per month as positive amounts (income rows: money in). */
+    values: number[];
+    /** Average over complete months. */
+    average: number;
+  }[];
+}
+
+export interface RecurringView extends RecurringSeries {
+  accountName: string;
+  categoryName: string | null;
+  ignored: boolean;
+}
+
+export interface RecurringResponse {
+  series: RecurringView[];
+  /** Expected charges and deposits over the next 45 days (active, not ignored). */
+  upcoming: (UpcomingItem & { accountName: string; categoryName: string | null })[];
+  today: string;
+}
+
+export interface NetWorthResponse {
+  points: NetWorthPoint[];
+  /** Change in net worth from the previous month's point. */
+  change: number | null;
+}
 
 export type { CsvMapping, DateOrder, RowError, RuleActions, RuleMatch };
 

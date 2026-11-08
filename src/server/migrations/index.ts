@@ -170,4 +170,24 @@ export const migrations: readonly Migration[] = [
       ).join("\n      ")}
     `,
   },
+  {
+    version: 3,
+    name: "budgets and recurring",
+    sql: `
+      -- One standing budget per category: monthly for Fixed, yearly for Non-monthly.
+      CREATE TABLE category_budgets (
+        category_id      INTEGER PRIMARY KEY REFERENCES categories (id) ON DELETE CASCADE,
+        amount           INTEGER NOT NULL CHECK (amount >= 0),
+        -- Non-monthly sinking fund balance when the fund started.
+        starting_balance INTEGER NOT NULL DEFAULT 0,
+        updated_at       TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+
+      -- Recurring series the user said aren't really recurring.
+      CREATE TABLE recurring_ignored (
+        key        TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+    `,
+  },
 ];

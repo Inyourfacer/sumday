@@ -82,13 +82,26 @@ export function registerCategoryRoutes(app: FastifyInstance, db: Db): void {
     if (patch.name !== undefined && nameTaken(db, patch.name, id)) {
       throw new HttpError(409, `There's already a category called "${patch.name}".`);
     }
-    db.prepare("UPDATE categories SET name = ?, group_name = ?, budget_type = ?, is_essential = ? WHERE id = ?").run(
-      patch.name ?? current.name,
-      patch.group ?? current.group,
-      patch.budgetType ?? current.budgetType,
-      (patch.isEssential ?? current.isEssential) ? 1 : 0,
-      id,
-    );
+    const newType = patch.budgetType ?? current.budgetType;
+    db.transaction(() => {
+      db.prepare("UPDATE categories SET name = ?, group_name = ?, budget_type = ?, is_essential = ? WHERE id = ?").run(
+        patch.name ?? current.name,
+        patch.group ?? current.group,
+        newType,
+        (patch.isEssential ?? current.isEssential) ? 1 : 0,
+        id,
+      );
+      // Fixed budgets are monthly and Non-monthly budgets yearly: convert, or drop for other types.
+      if (newType !== current.budgetType) {
+        if (current.budgetType === "fixed" && newType === "non_monthly") {
+          db.prepare("UPDATE category_budgets SET amount = amount * 12 WHERE category_id = ?").run(id);
+        } else if (current.budgetType === "non_monthly" && newType === "fixed") {
+          db.prepare("UPDATE category_budgets SET amount = CAST(ROUND(amount / 12.0) AS INTEGER) WHERE category_id = ?").run(id);
+        } else if (newType !== "fixed" && newType !== "non_monthly") {
+          db.prepare("DELETE FROM category_budgets WHERE category_id = ?").run(id);
+        }
+      }
+    })();
     return getCategory(db, id);
   });
 
