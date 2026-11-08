@@ -222,4 +222,45 @@ export const migrations: readonly Migration[] = [
       INSERT INTO goals (name, kind, priority) VALUES ('Emergency fund', 'emergency', 0);
     `,
   },
+  {
+    version: 5,
+    name: "investments",
+    sql: `
+      -- A fund, ETF, stock or cash position. Funds in 401(k)s often have no ticker.
+      CREATE TABLE securities (
+        id            INTEGER PRIMARY KEY,
+        ticker        TEXT UNIQUE COLLATE NOCASE,
+        name          TEXT NOT NULL,
+        -- A fund without a ticker can follow a similar one's daily moves.
+        proxy_ticker  TEXT,
+        -- Annual expense ratio in percent (0.03 = 0.03%).
+        expense_ratio REAL CHECK (expense_ratio IS NULL OR expense_ratio >= 0),
+        asset_mix     TEXT CHECK (asset_mix IS NULL OR json_valid(asset_mix)),
+        mix_source    TEXT CHECK (mix_source IS NULL OR mix_source IN ('known', 'guessed', 'manual')),
+        price_error   TEXT,
+        created_at    TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+
+      CREATE TABLE holdings (
+        id          INTEGER PRIMARY KEY,
+        account_id  INTEGER NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+        security_id INTEGER NOT NULL REFERENCES securities (id) ON DELETE CASCADE,
+        shares      REAL NOT NULL,
+        cost_basis  INTEGER,
+        updated_at  TEXT NOT NULL DEFAULT ${NOW},
+        UNIQUE (account_id, security_id)
+      ) STRICT;
+
+      -- Daily closing prices in dollars per share (fund prices go below a cent).
+      CREATE TABLE prices (
+        security_id INTEGER NOT NULL REFERENCES securities (id) ON DELETE CASCADE,
+        date        TEXT NOT NULL,
+        close       REAL NOT NULL CHECK (close >= 0),
+        source      TEXT NOT NULL CHECK (source IN ('provider', 'import', 'manual', 'proxy')),
+        PRIMARY KEY (security_id, date)
+      ) STRICT;
+
+      ALTER TABLE accounts ADD COLUMN holdings_mapping TEXT CHECK (holdings_mapping IS NULL OR json_valid(holdings_mapping));
+    `,
+  },
 ];

@@ -16,6 +16,8 @@ import {
   planSettingsSchema,
 } from "../shared/schemas.ts";
 import { listAccounts } from "./accounts.ts";
+import { getTarget, loadHoldings, toPositions } from "./holdings.ts";
+import { allocation, drift, fees } from "../engine/invest/portfolio.ts";
 import { getBudgetSettings, loadActuals, loadBudgetCategories, today } from "./budget.ts";
 import { getSetting, setSetting, type Db } from "./db.ts";
 import { getHousehold, getPeople } from "./household.ts";
@@ -235,6 +237,46 @@ function debtInputs(accounts: readonly AccountView[]): (PlanDebt & { minimumEsti
     });
 }
 
+// ---------- Portfolio checks ----------
+
+function portfolioAlerts(db: Db): PlanAlert[] {
+  const positions = toPositions(loadHoldings(db));
+  if (positions.length === 0) return [];
+  const out: PlanAlert[] = [];
+  const alloc = allocation(positions);
+  const { target } = getTarget(db);
+  const d = drift(alloc, target);
+  if (d.outOfBand) {
+    const off = d.rows.filter((r) => r.status !== "in");
+    out.push({
+      kind: "rebalance",
+      title: "Investments have drifted from your target mix",
+      message: `${off.map((r) => `${r.assetClass.replace("_", " ")} is ${Math.round(r.current * 100)}% (target ${Math.round(r.target * 100)}%)`).join("; ")}. See Investments for the cheapest way back.`,
+      facts: off.map((r) => ({ label: r.assetClass, value: Math.round(r.drift * 1000) / 10, kind: "percent" as const })),
+    });
+  }
+  if (alloc.unclassified > 0) {
+    out.push({
+      kind: "unclassified",
+      title: "Some holdings need an asset class",
+      message: "Sumday can't tell what some funds hold (target-date and blended funds, for example). Set their mix on the Investments page.",
+      facts: [{ label: "Unclassified", value: alloc.unclassified, kind: "money" }],
+    });
+  }
+  for (const e of fees(positions).expensive) {
+    out.push({
+      kind: "fees",
+      title: `${e.label} costs ${e.expenseRatio}% a year`,
+      message: `In ${e.accountName}. Broad index funds in the same asset class often cost under 0.1%. Check what your plan or brokerage offers.`,
+      facts: [
+        { label: "Value", value: e.value, kind: "money" },
+        { label: "Yearly cost", value: Math.round((e.value * e.expenseRatio) / 100), kind: "money" },
+      ],
+    });
+  }
+  return out;
+}
+
 // ---------- The plan ----------
 
 function yearStart(now: IsoDate): IsoDate {
@@ -331,7 +373,7 @@ export function buildPlan(db: Db): PlanResponse {
     },
     limits: { year: limitsChoice.limits.year, requestedYear: year, exact: limitsChoice.exact, source: limitsChoice.limits.source },
     settings,
-    alerts: alerts(ctx, debts),
+    alerts: [...alerts(ctx, debts), ...portfolioAlerts(db)],
     warnings,
   };
 }

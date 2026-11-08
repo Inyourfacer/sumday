@@ -5,6 +5,8 @@ import type { HealthResponse, SummaryResponse } from "../shared/api.ts";
 import { registerAccountRoutes } from "./accounts.ts";
 import { registerBudgetRoutes } from "./budget.ts";
 import { registerPlanRoutes } from "./plan.ts";
+import { registerInvestmentRoutes } from "./investments.ts";
+import { tiingoProvider, type PriceProvider } from "./prices.ts";
 import { registerCategoryRoutes } from "./categories.ts";
 import { schemaVersion, type Db } from "./db.ts";
 import { registerHouseholdRoutes, isSetupComplete, setupGaps } from "./household.ts";
@@ -18,6 +20,8 @@ export interface AppOptions {
   /** Directory of the built web UI. Skipped if missing (e.g. in `npm run dev`, where Vite serves it). */
   webDir?: string;
   logger?: boolean;
+  /** Where daily prices come from. Defaults to Tiingo with TIINGO_API_KEY. */
+  priceProvider?: PriceProvider;
 }
 
 const version = (
@@ -28,7 +32,8 @@ function count(db: Db, sql: string): number {
   return (db.prepare(sql).get() as { n: number }).n;
 }
 
-export async function buildApp({ db, webDir, logger = false }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, webDir, logger = false, priceProvider }: AppOptions): Promise<FastifyInstance> {
+  const prices = priceProvider ?? tiingoProvider(process.env.TIINGO_API_KEY);
   // Bank exports can be several MB; allow up to ~15 MB of JSON.
   const app = Fastify({ logger, bodyLimit: 15 * 1024 * 1024 });
   installErrorHandler(app);
@@ -58,6 +63,7 @@ export async function buildApp({ db, webDir, logger = false }: AppOptions): Prom
   registerImportRoutes(app, db);
   registerBudgetRoutes(app, db);
   registerPlanRoutes(app, db);
+  registerInvestmentRoutes(app, db, prices);
 
   if (webDir !== undefined && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });
