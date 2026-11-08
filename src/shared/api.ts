@@ -8,7 +8,94 @@ import type { BudgetMonth, CashFlowMonth } from "../engine/budget/budget.ts";
 import type { NetWorthPoint } from "../engine/budget/networth.ts";
 import type { RecurringSeries, UpcomingItem } from "../engine/budget/recurring.ts";
 
+import type { GoalProgress } from "../engine/plan/goals.ts";
+import type { StrategyComparison } from "../engine/plan/debt.ts";
+import type { Fact, Recommendation, StepId, WaterfallResult } from "../engine/plan/waterfall.ts";
+
 export type { BudgetMonth, CashFlowMonth, NetWorthPoint, RecurringSeries, UpcomingItem };
+export type { Fact, GoalProgress, Recommendation, StepId, StrategyComparison, WaterfallResult };
+
+export interface PlanSettings {
+  steps: { id: StepId; enabled: boolean }[];
+  starterAmount: number;
+  highInterestApr: number;
+  /** null = 3 months with two earners, 6 with one. */
+  emergencyMonths: number | null;
+  availableOverride: number | null;
+}
+
+export interface PlanAlert {
+  kind: "idle_cash" | "cash_yield" | "promo_ending";
+  title: string;
+  message: string;
+  facts: Fact[];
+}
+
+export interface PlanResponse {
+  result: WaterfallResult;
+  /** Where the monthly amount and the emergency fund numbers come from. */
+  basis: {
+    expectedIncome: number | null;
+    fixed: number;
+    nonMonthly: number;
+    flex: number;
+    /** expectedIncome − fixed − nonMonthly − flex, or null without expected income. */
+    computed: number | null;
+    override: number | null;
+    /** Complete months the averages use. */
+    averagedMonths: string[];
+    essentialMonthly: number;
+    emergencyTarget: number;
+    emergencySaved: number;
+    emergencyBasis: "earmarked" | "savings_accounts";
+    emergencyMonths: number;
+  };
+  limits: { year: number; requestedYear: number; exact: boolean; source: string };
+  settings: PlanSettings;
+  alerts: PlanAlert[];
+  warnings: string[];
+}
+
+export interface GoalView {
+  id: number;
+  name: string;
+  kind: "emergency" | "custom";
+  targetAmount: number;
+  /** Emergency fund only: the target is worked out from essential spending. */
+  targetIsAuto: boolean;
+  targetDate: string | null;
+  priority: number;
+  allocations: { accountId: number; accountName: string; amount: number }[];
+  progress: GoalProgress;
+  /** What the plan puts toward this goal each month right now. */
+  plannedMonthly: number;
+  emergency?: { months: number; essentialMonthly: number; autoTarget: number; basis: "earmarked" | "savings_accounts" };
+}
+
+export interface DebtView {
+  id: number;
+  name: string;
+  type: string;
+  balance: number;
+  apr: number;
+  aprMissing: boolean;
+  minPayment: number;
+  minimumEstimated: boolean;
+  promoApr: number | null;
+  promoEnds: string | null;
+  paysInFull: boolean;
+}
+
+export interface DebtsResponse {
+  debts: DebtView[];
+  /** Extra per month used for the payoff plans. */
+  extra: number;
+  /** What the plan currently puts toward debt each month. */
+  suggestedExtra: number;
+  start: string;
+  /** null when there's no debt to pay down. */
+  comparison: StrategyComparison | null;
+}
 
 export interface BudgetSettings {
   expectedIncome: number | null;
@@ -112,6 +199,11 @@ export interface AccountView {
   interestRatePct: number | null;
   isClosed: boolean;
   isLiability: boolean;
+  minimumPayment: number | null;
+  promoRatePct: number | null;
+  promoEnds: string | null;
+  /** Effective value: credit cards default to paid in full. */
+  paysInFull: boolean;
   /** Latest snapshot plus posted transactions after it. */
   balance: number;
   balanceAsOf: string | null;

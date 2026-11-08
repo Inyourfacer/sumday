@@ -1,0 +1,13 @@
+{
+  "year": 2026,
+  "source": "IRS 2026 limits announced Nov 13, 2025 (401(k) $24,500; IRA $7,500 + $1,100 catch-up) and Rev. Proc. 2025-19 (HSA). Amounts in cents. Verify against irs.gov.",
+  "workplace": { "employee": 2450000, "catchUp50": 800000, "catchUp60to63": 1125000 },
+  "ira": { "limit": 750000, "catchUp50": 110000 },
+  "hsa": { "self": 440000, "family": 875000, "catchUp55": 100000 },
+  "rothIraPhaseOut": {
+    "single": [15300000, 16800000],
+    "head_of_household": [15300000, 16800000],
+    "married_joint": [24200000, 25200000],
+    "married_separate": [0, 1000000]
+  }
+}

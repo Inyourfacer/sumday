@@ -190,4 +190,36 @@ export const migrations: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 4,
+    name: "goals and debt details",
+    sql: `
+      ALTER TABLE accounts ADD COLUMN minimum_payment INTEGER CHECK (minimum_payment IS NULL OR minimum_payment >= 0);
+      ALTER TABLE accounts ADD COLUMN promo_rate_pct REAL;
+      ALTER TABLE accounts ADD COLUMN promo_ends TEXT;
+      -- NULL = default for the type (credit cards are assumed paid in full).
+      ALTER TABLE accounts ADD COLUMN pays_in_full INTEGER CHECK (pays_in_full IS NULL OR pays_in_full IN (0, 1));
+
+      CREATE TABLE goals (
+        id            INTEGER PRIMARY KEY,
+        name          TEXT NOT NULL,
+        -- The emergency fund is built in; its target is worked out from spending unless set.
+        kind          TEXT NOT NULL DEFAULT 'custom' CHECK (kind IN ('emergency', 'custom')),
+        target_amount INTEGER CHECK (target_amount IS NULL OR target_amount >= 0),
+        target_date   TEXT,
+        priority      INTEGER NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+
+      -- Money in an account set aside for a goal. Nothing moves; it's a label.
+      CREATE TABLE goal_allocations (
+        goal_id    INTEGER NOT NULL REFERENCES goals (id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+        amount     INTEGER NOT NULL CHECK (amount > 0),
+        PRIMARY KEY (goal_id, account_id)
+      ) STRICT;
+
+      INSERT INTO goals (name, kind, priority) VALUES ('Emergency fund', 'emergency', 0);
+    `,
+  },
 ];
