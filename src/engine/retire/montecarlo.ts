@@ -331,13 +331,18 @@ export interface WhatIfs {
   };
 }
 
-/** The what-if questions, each answered with a smaller number of runs (same seed, so comparisons are fair). */
-export function whatIfs(input: SimInput, target: number, base: SimResult, runs = 1500): WhatIfs {
+/**
+ * The what-if questions, each answered with a smaller number of runs (same
+ * seed, so comparisons are fair). `ongoingSpending` is the regular yearly
+ * spending at retirement (without one-off costs), which the spending
+ * answers are expressed in.
+ */
+export function whatIfs(input: SimInput, target: number, base: SimResult, runs = 1500, ongoingSpending?: number): WhatIfs {
   const quick = { ...input, runs };
   const rate = (i: SimInput) => simulate(i, { bands: false }).successRate;
   const retireYear = base.retireYear;
   const t0 = Math.max(0, retireYear - input.startYear);
-  const firstSpend = input.spending[t0] ?? 0;
+  const firstSpend = ongoingSpending ?? input.spending[t0] ?? 0;
 
   const scaled = (m: number) => ({ ...quick, spending: input.spending.map((s, t) => (t >= t0 ? s * m : s)) });
   const m = solve(0, 3, (x) => rate(scaled(x)) >= target, 12, false);
@@ -350,7 +355,8 @@ export function whatIfs(input: SimInput, target: number, base: SimResult, runs =
     retireAt.push({
       shift,
       ages: Object.fromEntries(people.map((p) => [p.id, p.retirementAge])),
-      successRate: shift === 0 && runs === input.runs ? base.successRate : rate({ ...quick, people }),
+      // Your plan as it stands uses the full run, so it matches the headline number.
+      successRate: shift === 0 ? base.successRate : rate({ ...quick, people }),
     });
   }
 

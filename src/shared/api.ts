@@ -188,7 +188,7 @@ export interface RetirementResponse {
       categories: { categoryId: number; name: string; current: number; retirement: number | null }[];
       items: { label: string; amount: number; fromAge: number | null; toAge: number | null }[];
       oneOffs: { label: string; amount: number; age: number; everyYears: number | null }[];
-      /** Spending in the first year of retirement, today's dollars. */
+      /** Regular yearly spending when retirement starts (one-off costs not included), today's dollars. */
       firstYear: number;
     };
   } | null;

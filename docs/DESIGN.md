@@ -347,58 +347,66 @@ All thresholds are editable in Plan settings.
 
 ### 11.1 Inputs
 
-- **Per person:** birth date, target retirement age, current income, expected
-  raises, contributions (and %), Social Security estimates at 62 / FRA / 70 from
-  each person's ssa.gov statement, claim age, and any pension.
-- **Accounts** grouped by tax bucket: **taxable, traditional (pre-tax),
-  Roth, HSA**.
-- **Retirement spending,** built from **your actual budget**: start from the
-  trailing-12-month average by category, then adjust each line ("Mortgage ends
-  2038", "Kids' activities → $0", "Travel +$6k/yr until 75", "Healthcare: pre-65
-  premium of $X, then Medicare"). One-off expenses (car every 8 years, roof)
-  can be added.
-- **Assumptions:** inflation (from the historical data, or fixed), effective tax
-  rate on traditional withdrawals (default 15%, editable), on taxable gains
-  (default 15% on the gain portion), success target (default 85%), planning
-  horizon (age 95).
+- **People** (Settings → Household): birth date, target retirement age,
+  income and raise, workplace plan contributions and match, HSA payroll,
+  Social Security estimates from ssa.gov at 62 / full retirement age / 70,
+  claim age, and any pension (monthly, start age, COLA or not).
+- **Social Security** at the claim age uses SSA's formulas from the full
+  retirement age amount (5/9% less per month for the first 36 months early,
+  5/12% beyond; 2/3% more per month of delay up to 70), or interpolates the
+  62 and 70 amounts. Spousal benefits aren't modeled yet.
+- **Starting money**: brokerage, retirement and HSA accounts, grouped by tax
+  treatment (taxable, pre-tax per owner, Roth, HSA). Cash accounts (the
+  emergency fund) aren't counted. Taxable cost basis comes from holdings.
+- **Mix and fees**: your target allocation (stocks / bonds / cash),
+  rebalanced yearly, less the weighted expense ratio.
+- **Extra savings**: optionally, what Next best moves recommends each month
+  (IRA, workplace plan, HSA, brokerage), while anyone is still working.
+- **Retirement spending**, built from **your actual budget**: each
+  category's yearly amount (budget where set, otherwise recent average),
+  changed for retirement as you like; timed changes by age (e.g. health
+  insurance until Medicare, travel until 75, a mortgage that ends); and
+  one-off costs, optionally repeating (a car every 8 years).
+- **Assumptions**: tax on pre-tax withdrawals (default 15%), tax on
+  investment gains (default 15%), success target (default 85%), planning
+  horizon (Settings → Household, default 95 for the youngest adult).
 
 ### 11.2 Monte Carlo engine
 
-- **Historical bootstrap.** A bundled dataset of **annual** US returns for
-  stocks, bonds and T-bills, plus CPI inflation (e.g. Damodaran's historical
-  returns, 1928–present). Each simulated year draws **one whole historical
-  year** (all assets plus inflation together), so real correlations and crash
-  years are kept.
-- **Block bootstrap** (default block length 5 years, editable) keeps runs of
-  good and bad years together, so the risk of a bad stretch right at
-  retirement shows up in the results.
-- **Runs:** 10,000 paths by default, with a **seeded RNG** so the same inputs
-  always give the same answer (and tests are stable).
-- **Each simulated year:**
-  1. Grow each bucket by its allocation's return for that year.
-  2. Before retirement: add contributions (rising with raises), capped at
-     limits.
-  3. In retirement: compute spending (inflated), subtract Social Security and
-     pensions, and withdraw the gap plus estimated tax.
-  4. **Withdrawal order** (default): RMDs first → taxable → traditional → Roth
-     → HSA (HSA is also used first for healthcare costs).
-  5. **RMDs** start at the age required by current law (in the yearly data
-     file), using the IRS Uniform Lifetime Table.
-- **Outputs:**
-  - Success probability: the share of paths that never run out before the
-    horizon.
-  - Portfolio value bands over time (10th / 25th / 50th / 75th / 90th
-    percentile) in today's dollars.
-  - The age assets run out, in failing paths.
-  - Sustainable spending at the target success rate (found by bisection).
-  - "Can I retire at X?": success probability for each retirement age across a
-    range.
+- **Data**: `data/returns/us-annual.json`: annual S&P 500 total return,
+  10-year Treasury, 3-month T-bill and CPI inflation, 1928–2025, from Aswath
+  Damodaran (NYU Stern) with FRED CPI, with source and checks recorded in
+  the file. International stocks use the US stock series (there's no
+  comparable century-long international series).
+- **Historical block bootstrap**: each simulated year draws one whole
+  historical year (all asset returns and inflation together), in blocks of
+  consecutive years (default 5, circular), so bad stretches stay together.
+- **Today's dollars throughout**: returns are made real with that year's
+  inflation. Social Security keeps pace; pensions without a COLA lose value.
+- **10,000 runs**, seeded, so the same inputs always give the same answer.
+- **Each year**: workers add contributions and match (pay grows by the
+  raise, less inflation) plus any extra savings; once everyone with a
+  paycheck has retired, spending minus Social Security and pensions is
+  withdrawn: required minimums first (IRS Uniform Lifetime Table, start age
+  73 or 75 by birth year, from `data/rmd/uniform-lifetime.json`; unneeded
+  minimums are reinvested in taxable), then taxable (tax on the gain share),
+  pre-tax (tax at the set rate), Roth, HSA. Then everything grows. A run
+  fails if spending can't be met before the horizon.
+- **Outputs**: chance of success; portfolio percentile bands (10/25/50/75/90)
+  per year; median at retirement and at the end; for failing runs, when the
+  money runs out (median).
+- **What-ifs** (1,500 runs each, same seed): spending you can afford at the
+  target (by bisection), success when retiring 3 years earlier to 3 later,
+  and the smallest single change that reaches the target: extra monthly
+  savings, retiring later, or spending less.
+- Speed: about 0.4 seconds for everything; results are cached by input.
 
-### 11.3 What it does *not* do (v1)
+### 11.3 What it does *not* do (yet)
 
-There are no federal or state tax brackets, Roth conversion planning, IRMAA,
-or tax-optimized withdrawal sequencing. The design keeps a `TaxModel`
-interface so a bracket-based model can replace the flat-rate one later.
+No federal or state tax brackets, Roth conversion planning, IRMAA, spousal
+or survivor Social Security benefits, or tax-optimized withdrawal order.
+When one adult retires before the other, the remaining paycheck is assumed
+to cover spending until the last one retires.
 
 ## 12. What-if scenarios
 
@@ -463,8 +471,8 @@ sumday/
 
 ## 15. Open questions
 
-1. **Returns dataset:** confirm the source and that its terms allow bundling it
-   in a personal repo.
+1. **Returns dataset:** bundled with attribution (Damodaran, NYU Stern). The
+   workbook states no license; check its terms before publishing the repo.
 2. **Automated imports:** which pipeline to build first (watched folder, email
    inbox, or something else). The pipeline is already designed to accept any
    of them.

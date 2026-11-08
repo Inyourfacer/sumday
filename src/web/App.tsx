@@ -7,6 +7,7 @@ import { DebtPage } from "./pages/Debt.tsx";
 import { GoalsPage } from "./pages/Goals.tsx";
 import { HoldingsImportPage } from "./pages/HoldingsImport.tsx";
 import { InvestmentsPage } from "./pages/Investments.tsx";
+import { RetirementPage } from "./pages/Retirement.tsx";
 import { PlanPage } from "./pages/Plan.tsx";
 import { CashFlowPage } from "./pages/CashFlow.tsx";
 import { RecurringPage } from "./pages/Recurring.tsx";
@@ -58,6 +59,7 @@ function route(path: string, summary: SummaryResponse | undefined): ReactNode {
   if (path === "/goals") return <GoalsPage />;
   if (path === "/debt") return <DebtPage />;
   if (path === "/investments") return <InvestmentsPage />;
+  if (path === "/retirement") return <RetirementPage />;
   if (path === "/investments/import") return <HoldingsImportPage />;
   if (path === "/cashflow") return <CashFlowPage />;
   if (path === "/recurring") return <RecurringPage />;
@@ -102,7 +104,7 @@ export function App() {
     { to: "/goals", label: "Goals" },
     { to: "/debt", label: "Debt" },
     { to: "/investments", label: "Investments" },
-    { to: "/retirement", label: "Retirement", phase: 5 },
+    { to: "/retirement", label: "Retirement" },
     { to: "/scenarios", label: "Scenarios", phase: 6 },
   ];
   const settings: NavItem[] = [

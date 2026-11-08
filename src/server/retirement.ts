@@ -144,6 +144,8 @@ function buildInput(db: Db, settings: StoredSettings): { built: Built | null; mi
   };
   const endYear = Math.max(...simPeople.map((p) => p.birthYear + household.planningHorizonAge));
   const spending = Array.from({ length: endYear - startYear + 1 }, (_, t) => spendingAtAge(plan, startYear + t - primary.birthYear));
+  // Regular yearly spending when retirement starts, without one-off costs.
+  const ongoingAtRetirement = (retireYear: number) => spendingAtAge({ ...plan, oneOffs: [] }, retireYear - primary.birthYear);
 
   const input: SimInput = {
     startYear,
@@ -189,7 +191,7 @@ function buildInput(db: Db, settings: StoredSettings): { built: Built | null; mi
           total: extraSavings.taxable + extraSavings.roth + extraSavings.hsa + Object.values(extraSavings.traditional).reduce((s, v) => s + v, 0),
           fromPlan: settings.includePlanSavings,
         },
-        spending: { ...plan, firstYear: spending[Math.max(0, retireYear - startYear)] ?? 0 },
+        spending: { ...plan, firstYear: ongoingAtRetirement(retireYear) },
       },
     },
   };
@@ -226,7 +228,7 @@ export function retirement(db: Db): RetirementResponse {
   const key = JSON.stringify({ i: { ...built.input, history: undefined, rmd: undefined }, t: settings.successTarget, w: true });
   const { result, whatIfs: w } = cached(key, () => {
     const result = simulate(built.input);
-    return { result, whatIfs: whatIfs(built.input, settings.successTarget, result) };
+    return { result, whatIfs: whatIfs(built.input, settings.successTarget, result, 1500, built.view.spending.firstYear) };
   });
   return { ready: true, missing: [], settings: publicSettings, inputs: built.view, result, whatIfs: w, sources };
 }

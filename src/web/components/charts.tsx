@@ -263,3 +263,168 @@ export function Meter({ used, total, label }: { used: number; total: number; lab
     </div>
   );
 }
+
+export interface FanPoint {
+  year: number;
+  label: string;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
+/**
+ * The range of simulated outcomes over time: a light band from the 10th to
+ * the 90th percentile, a stronger band for the middle half, and the median
+ * as a line. One hue (it's one quantity); a marker shows when retirement
+ * starts. Hover or arrow keys show a year's numbers.
+ */
+export function FanChart({
+  points,
+  markerYear,
+  height = 280,
+  label,
+  axisLabel,
+}: {
+  points: readonly FanPoint[];
+  markerYear?: number;
+  height?: number;
+  label: string;
+  axisLabel?: string;
+}) {
+  const [ref, width] = useWidth<HTMLDivElement>();
+  const [active, setActive] = useState<number | null>(null);
+  if (points.length === 0) return <div ref={ref} className="chart" />;
+  // Scale to the middle of the outcomes: the luckiest 10% can run far off the top and would
+  // flatten everything else. The outer band is clipped at the edge (the tooltip has its numbers).
+  const p75max = Math.max(...points.map((p) => p.p75), 1);
+  const p90max = Math.max(...points.map((p) => p.p90), 1);
+  const hiValue = Math.min(p90max, p75max * 1.6);
+  const trimmed = p90max > hiValue;
+  const ticks = niceTicks(0, hiValue);
+  const hi = ticks.at(-1)!;
+  const plotW = Math.max(0, width - PAD.left - PAD.right);
+  const plotH = height - PAD.top - PAD.bottom;
+  const x = (i: number) => PAD.left + (points.length === 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+  const y = (v: number) => PAD.top + plotH - (v / hi) * plotH;
+  const area = (lo: keyof FanPoint, up: keyof FanPoint) =>
+    points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p[up] as number).toFixed(1)}`).join(" ") +
+    " " +
+    [...points]
+      .map((p, i) => ({ p, i }))
+      .reverse()
+      .map(({ p, i }) => `L${x(i).toFixed(1)},${y(p[lo] as number).toFixed(1)}`)
+      .join(" ") +
+    " Z";
+  const median = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.p50).toFixed(1)}`).join(" ");
+  const stride = labelStride(points.length, plotW, 40);
+  const markerIndex = markerYear === undefined ? -1 : points.findIndex((p) => p.year === markerYear);
+  const last = points.length - 1;
+
+  const onMove = (e: PointerEvent<SVGSVGElement>) => {
+    const px = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    const i = Math.round(((px - PAD.left) / Math.max(1, plotW)) * last);
+    setActive(Math.min(last, Math.max(0, i)));
+  };
+  const onKey = (e: KeyboardEvent<SVGSVGElement>) => {
+    if (e.key === "ArrowLeft") setActive((a) => Math.max(0, (a ?? last) - 1));
+    else if (e.key === "ArrowRight") setActive((a) => Math.min(last, (a ?? 0) + 1));
+    else return;
+    e.preventDefault();
+  };
+  const shown = active === null ? null : points[active]!;
+
+  return (
+    <div className="chart-block">
+      <div className="legend" aria-hidden>
+        <span>
+          <i className="key s1" />
+          Median
+        </span>
+        <span>
+          <i className="swatch band-mid" />
+          Middle half of outcomes
+        </span>
+        <span>
+          <i className="swatch band-wide" />
+          8 in 10 outcomes{trimmed ? " (top trimmed)" : ""}
+        </span>
+        {axisLabel && <span className="legend-axis">Across: {axisLabel}</span>}
+      </div>
+      <div ref={ref} className="chart" style={{ height }}>
+        {width > 0 && (
+          <svg
+            width={width}
+            height={height}
+            role="img"
+            aria-label={label}
+            tabIndex={0}
+            onPointerMove={onMove}
+            onPointerLeave={() => setActive(null)}
+            onBlur={() => setActive(null)}
+            onKeyDown={onKey}
+          >
+            {ticks.map((t) => (
+              <g key={t}>
+                <line className={t === 0 ? "baseline" : "grid"} x1={PAD.left} x2={width - PAD.right} y1={y(t)} y2={y(t)} />
+                <text className="tick" x={PAD.left - 8} y={y(t)} dy="0.32em" textAnchor="end">
+                  {compactMoney(t)}
+                </text>
+              </g>
+            ))}
+            {points.map((p, i) =>
+              i % stride === 0 ? (
+                <text key={p.year} className="tick" x={x(i)} y={height - 8} textAnchor="middle">
+                  {p.label}
+                </text>
+              ) : null,
+            )}
+            <defs>
+              <clipPath id="fan-plot">
+                <rect x={PAD.left} y={PAD.top} width={plotW} height={plotH} />
+              </clipPath>
+            </defs>
+            <g clipPath="url(#fan-plot)">
+              <path className="band-wide-fill" d={area("p10", "p90")} />
+              <path className="band-mid-fill" d={area("p25", "p75")} />
+              <path className="line s1" d={median} />
+            </g>
+
+            {markerIndex >= 0 && (
+              <g>
+                <line className="marker" x1={x(markerIndex)} x2={x(markerIndex)} y1={PAD.top} y2={PAD.top + plotH} />
+                <text className="tick marker-label" x={x(markerIndex) + 4} y={PAD.top + 10}>
+                  Retire
+                </text>
+              </g>
+            )}
+            {shown && active !== null && (
+              <>
+                <line className="crosshair" x1={x(active)} x2={x(active)} y1={PAD.top} y2={PAD.top + plotH} />
+                <circle className="dot s1" cx={x(active)} cy={y(shown.p50)} r={4.5} />
+              </>
+            )}
+          </svg>
+        )}
+        {shown && active !== null && (
+          <div className="tooltip" style={{ left: Math.min(Math.max(x(active) - 80, 0), Math.max(0, width - 180)), top: 0 }}>
+            <span className="tooltip-title">
+              {shown.year}
+              {axisLabel ? ` · ${axisLabel} ${shown.label}` : ` · ${shown.label}`}
+            </span>
+            <span className="tooltip-row">
+              <strong>{compactMoney(shown.p50)}</strong> median
+            </span>
+            <span className="tooltip-row">
+              {compactMoney(shown.p25)}–{compactMoney(shown.p75)} middle half
+            </span>
+            <span className="tooltip-row">
+              {compactMoney(shown.p10)}–{compactMoney(shown.p90)} 8 in 10
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
