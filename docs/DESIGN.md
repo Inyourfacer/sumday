@@ -62,7 +62,7 @@ immediately.
 | **Household** | filing status, state, planning horizon (default age 95), inflation assumption |
 | **Account** | name, institution, type (checking, savings, credit card, loan, mortgage, brokerage, 401k, 403b, IRA, Roth IRA, HSA, 529, other asset), tax treatment (taxable / traditional / Roth / HSA), owner, interest rate (cash & debt), employer match rules (401k) |
 | **Transaction** | account, date, amount (integer cents, signed), payee (raw + normalized), category, transfer link, import batch, notes |
-| **Category** | name, group, budget type (**Fixed / Flex / Non-monthly / Income / Transfer / Savings**) |
+| **Category** | name, group, budget type (**Fixed / Flex / Non-monthly / Income / Transfer**), essential flag. Savings are not a category: a transfer into an investment or retirement account counts as savings (Section 4.4). |
 | **Rule** | match (payee contains/regex, amount range, account), action (set category, rename payee, mark transfer), priority |
 | **Holding** | account, security, shares, cost basis lots (date, shares, cost) |
 | **Security** | ticker (optional), proxy ticker (optional), name, asset class mix (e.g. 100% US stock, or a blend for target-date funds), expense ratio |

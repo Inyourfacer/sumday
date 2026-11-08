@@ -99,14 +99,15 @@ function inspect(db: Db, accountId: number, fileName: string, content: string): 
   const saved = getCsvMapping(db, accountId);
   const useSaved = saved !== undefined && mappingFits(saved, width);
   const mapping = useSaved ? saved : suggestion.mapping;
-  const hasHeader = mapping?.hasHeader ?? false;
+  const hasHeader = mapping?.hasHeader ?? suggestion.mapping?.hasHeader ?? false;
   const columns = hasHeader
-    ? rows[0]!.map((h, i) => h.trim() || `Column ${i + 1}`)
+    ? Array.from({ length: width }, (_, i) => rows[0]![i]?.trim() || `Column ${i + 1}`)
     : Array.from({ length: width }, (_, i) => `Column ${i + 1}`);
   return {
     format: "csv",
     columns,
-    sampleRows: rows.slice(hasHeader ? 1 : 0, (hasHeader ? 1 : 0) + 8),
+    // Raw first rows, header included, so the mapping form can preview any choice.
+    sampleRows: rows.slice(0, 9),
     ...(mapping === undefined ? {} : { mapping }),
     mappingSource: useSaved ? "saved" : mapping ? "suggested" : "none",
     notes: useSaved ? [] : suggestion.notes,

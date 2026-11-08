@@ -107,7 +107,18 @@ describe("household", () => {
   it("tracks setup completion and gaps", async () => {
     let summary = await ok<SummaryResponse>("GET", "/api/summary");
     expect(summary.setupGaps.length).toBeGreaterThan(0);
-    await ok("PUT", "/api/household", { household: {}, people: [{ name: "Alex", birthDate: "1986-04-12", income: 100 }] });
+    await ok("PUT", "/api/household", {
+      household: {},
+      people: [
+        { name: "Alex", birthDate: "1986-04-12", income: 100 },
+        { name: "Sam", birthDate: "1988-09-30" },
+      ],
+    });
+    summary = await ok<SummaryResponse>("GET", "/api/summary");
+    expect(summary.setupGaps).toEqual(["Add Sam's income (or 0 if not working)."]);
+    // 0 means "not working", which is an answer.
+    const hh = await ok<HouseholdResponse>("GET", "/api/household");
+    await ok("PUT", "/api/household", { household: hh.household, people: hh.people.map((p) => ({ ...p, income: p.income ?? 0 })) });
     summary = await ok<SummaryResponse>("GET", "/api/summary");
     expect(summary.setupGaps).toEqual([]);
     await ok("POST", "/api/setup/complete", { complete: true });
@@ -151,7 +162,7 @@ describe("CSV import", () => {
     expect(inspected.format).toBe("csv");
     expect(inspected.mappingSource).toBe("suggested");
     expect(inspected.columns).toEqual(["Posting Date", "Description", "Amount", "Balance"]);
-    expect(inspected.sampleRows).toHaveLength(5);
+    expect(inspected.sampleRows).toHaveLength(6);
 
     const batch = await importFile(checking.id, "checking.csv", CHECKING_CSV, inspected.mapping);
     expect(batch.status).toBe("staged");

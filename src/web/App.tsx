@@ -1,110 +1,126 @@
-import { useEffect, useState } from "react";
-import type { HealthResponse } from "../shared/api.ts";
+import { useCallback, useEffect, type ReactNode } from "react";
+import type { HealthResponse, SummaryResponse } from "../shared/api.ts";
+import { useApi, useDataChanged } from "./api.ts";
+import { AccountDetailPage, AccountsPage } from "./pages/Accounts.tsx";
+import { CategoriesPage } from "./pages/Categories.tsx";
+import { DashboardPage } from "./pages/Dashboard.tsx";
+import { ImportPage } from "./pages/Import.tsx";
+import { ImportReviewPage } from "./pages/ImportReview.tsx";
+import { RulesPage } from "./pages/Rules.tsx";
+import { SettingsHouseholdPage } from "./pages/SettingsHousehold.tsx";
+import { SetupPage } from "./pages/Setup.tsx";
+import { TransactionsPage } from "./pages/Transactions.tsx";
+import { Link } from "./router.tsx";
+import { matchPath, navigate, useLocation } from "./navigation.ts";
 
-type Health = { state: "loading" } | { state: "ok"; data: HealthResponse } | { state: "error"; message: string };
+interface NavItem {
+  to: string;
+  label: string;
+  phase?: number;
+  badge?: number;
+}
 
-const SECTIONS = [
-  { name: "Dashboard", phase: 0 },
-  { name: "Transactions", phase: 1 },
-  { name: "Budget", phase: 2 },
-  { name: "Goals", phase: 3 },
-  { name: "Debt", phase: 3 },
-  { name: "Investments", phase: 4 },
-  { name: "Retirement", phase: 5 },
-  { name: "Scenarios", phase: 6 },
-  { name: "Settings", phase: 1 },
-] as const;
+function NavLink({ item, path }: { item: NavItem; path: string }) {
+  if (item.phase !== undefined) {
+    return (
+      <span className="soon" title={`Coming in Phase ${item.phase}`}>
+        {item.label}
+        <small>P{item.phase}</small>
+      </span>
+    );
+  }
+  const active = item.to === "/" ? path === "/" : path === item.to || path.startsWith(`${item.to}/`);
+  return (
+    <Link to={item.to} className={active ? "active" : undefined} aria-current={active ? "page" : undefined}>
+      {item.label}
+      {item.badge ? <span className="count">{item.badge}</span> : null}
+    </Link>
+  );
+}
 
-const CARDS = [
-  {
-    title: "Next best moves",
-    body: "Where this month's surplus should go, and the rule behind each step.",
-    phase: 3,
-  },
-  { title: "This month", body: "Fixed bills, non-monthly set-asides and what's left in the flex pool.", phase: 2 },
-  { title: "Net worth", body: "Assets minus debts, over time.", phase: 2 },
-  { title: "Retirement", body: "Chance of success across 10,000 simulated futures.", phase: 5 },
-] as const;
-
-function useHealth(): Health {
-  const [health, setHealth] = useState<Health>({ state: "loading" });
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/health")
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`API returned ${res.status}`);
-        return (await res.json()) as HealthResponse;
-      })
-      .then((data) => !cancelled && setHealth({ state: "ok", data }))
-      .catch((err: unknown) => {
-        if (!cancelled) setHealth({ state: "error", message: err instanceof Error ? err.message : String(err) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return health;
+function route(path: string, summary: SummaryResponse | undefined): ReactNode {
+  let m: Record<string, string> | null;
+  if (path === "/") return <DashboardPage summary={summary} />;
+  if (path === "/setup") return <SetupPage />;
+  if (path === "/accounts") return <AccountsPage />;
+  if ((m = matchPath("/accounts/:id", path))) return <AccountDetailPage key={m.id} id={Number(m.id)} />;
+  if (path === "/transactions") return <TransactionsPage />;
+  if (path === "/import") return <ImportPage />;
+  if ((m = matchPath("/import/:id", path))) return <ImportReviewPage key={m.id} id={Number(m.id)} />;
+  if (path === "/settings/household") return <SettingsHouseholdPage />;
+  if (path === "/settings/categories") return <CategoriesPage />;
+  if (path === "/settings/rules") return <RulesPage />;
+  return (
+    <div className="empty">
+      <h1>Page not found</h1>
+      <Link to="/">Back to the dashboard</Link>
+    </div>
+  );
 }
 
 export function App() {
-  const health = useHealth();
+  const { path } = useLocation();
+  const health = useApi<HealthResponse>("/api/health");
+  const summary = useApi<SummaryResponse>("/api/summary");
+  const { reload: refetchSummary } = summary;
+  const reloadSummary = useCallback(() => void refetchSummary(), [refetchSummary]);
+  useDataChanged(reloadSummary);
+
+  // First run: send people to the setup wizard (they can skip it).
+  useEffect(() => {
+    if (path === "/" && summary.data && !summary.data.setupComplete && summary.data.accountCount === 0) {
+      navigate("/setup", { replace: true });
+    }
+  }, [path, summary.data]);
+
+  const s = summary.data;
+  const main: NavItem[] = [
+    { to: "/", label: "Dashboard" },
+    { to: "/accounts", label: "Accounts" },
+    { to: "/transactions", label: "Transactions", badge: s?.uncategorizedCount },
+    { to: "/import", label: "Import", badge: s?.stagedImportCount },
+    { to: "/budget", label: "Budget", phase: 2 },
+    { to: "/goals", label: "Goals", phase: 3 },
+    { to: "/debt", label: "Debt", phase: 3 },
+    { to: "/investments", label: "Investments", phase: 4 },
+    { to: "/retirement", label: "Retirement", phase: 5 },
+    { to: "/scenarios", label: "Scenarios", phase: 6 },
+  ];
+  const settings: NavItem[] = [
+    { to: "/settings/household", label: "Household" },
+    { to: "/settings/categories", label: "Categories" },
+    { to: "/settings/rules", label: "Rules" },
+  ];
 
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand">
+        <Link to="/" className="brand">
           Sum<span>day</span>
-        </div>
+        </Link>
         <nav aria-label="Sections">
-          {SECTIONS.map((s) => (
-            <a
-              key={s.name}
-              href="#"
-              className={s.phase === 0 ? "active" : "soon"}
-              aria-current={s.phase === 0 ? "page" : undefined}
-              aria-disabled={s.phase === 0 ? undefined : true}
-              title={s.phase === 0 ? undefined : `Coming in Phase ${s.phase}`}
-              onClick={(e) => e.preventDefault()}
-            >
-              {s.name}
-              {s.phase > 0 && <small>P{s.phase}</small>}
-            </a>
+          {main.map((item) => (
+            <NavLink key={item.to} item={item} path={path} />
+          ))}
+          <span className="nav-heading">Settings</span>
+          {settings.map((item) => (
+            <NavLink key={item.to} item={item} path={path} />
           ))}
         </nav>
-      </aside>
-
-      <main>
-        <header>
-          <h1>Dashboard</h1>
-          <p className="lede">Nothing here yet. Add your household and import some transactions to get started.</p>
-        </header>
-
-        <section className="cards">
-          {CARDS.map((c) => (
-            <article key={c.title} className="card">
-              <h2>{c.title}</h2>
-              <p>{c.body}</p>
-              <span className="badge">Phase {c.phase}</span>
-            </article>
-          ))}
-        </section>
-
         <footer className="status" role="status">
-          {health.state === "loading" && "Connecting to the local server…"}
-          {health.state === "ok" && (
+          {health.data && (
             <>
-              <span className="dot ok" aria-hidden /> Local server v{health.data.version} · database schema v
-              {health.data.schemaVersion} · {health.data.setupComplete ? "setup complete" : "setup not started"}
+              <span className="dot ok" aria-hidden /> v{health.data.version} · schema v{health.data.schemaVersion}
             </>
           )}
-          {health.state === "error" && (
+          {health.error && (
             <>
-              <span className="dot err" aria-hidden /> Can't reach the local server ({health.message}). Is{" "}
-              <code>npm start</code> running?
+              <span className="dot err" aria-hidden /> Server not reachable. Is <code>npm start</code> running?
             </>
           )}
         </footer>
-      </main>
+      </aside>
+      <main>{route(path, s)}</main>
     </div>
   );
 }

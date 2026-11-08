@@ -73,8 +73,8 @@ export const personSchema = z.object({
   name: z.string().trim().min(1, "Enter a name.").max(60),
   birthDate: isoDate.nullable().default(null),
   retirementAge: z.number().int().min(30).max(85).default(65),
-  /** Gross yearly earned income, in cents. */
-  income: nonNegCents.default(0),
+  /** Gross yearly earned income, in cents. null = not entered yet (0 = not working). */
+  income: nonNegCents.nullable().default(null),
   raisePct: pct(20).default(3),
   /** Monthly Social Security benefit estimates from ssa.gov, in cents. */
   socialSecurity: z

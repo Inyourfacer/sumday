@@ -7,7 +7,23 @@ your next dollar, using rules and math you can inspect.
 - [Design](docs/DESIGN.md)
 - [Build plan](docs/PLAN.md)
 
-> **Status:** Phase 0 (foundations) is done. The dashboard is an empty shell.
+> **Status:** Phase 1 is done: household setup, accounts, CSV/OFX import with
+> review and undo, categories, rules and transfer matching. Budgets come next.
+
+## Using it
+
+1. **Setup** opens on first run: household, the adults, workplace plans, employer
+   match, Social Security. Skip anything; it shows up later as a reminder.
+2. **Accounts**: add each account. For ones you won't import (a 401(k), your home),
+   enter a balance instead.
+3. **Import**: download a CSV, OFX or QFX from your bank and pick the account.
+   For a CSV, check the column mapping and preview once; it's remembered. Nothing
+   is saved until you review the rows and press **Add**. Re-importing an
+   overlapping date range skips rows you already have, and any import can be
+   undone from **Import history**.
+4. **Transactions → Uncategorized inbox**: pick categories. Each correction offers
+   to become a rule, which also fixes matching past transactions. Payments
+   between your own accounts are paired as transfers automatically.
 
 ## Running it
 

@@ -149,8 +149,9 @@ export interface ImportBatchDetail extends ImportBatchView {
 
 export interface ImportInspectResult {
   format: "csv" | "ofx";
-  /** CSV only. */
+  /** CSV only. Column names, from the header row when there is one. */
   columns?: string[];
+  /** The file's first rows exactly as read, header row included. */
   sampleRows?: string[][];
   mapping?: CsvMapping;
   mappingSource?: "saved" | "suggested" | "none";

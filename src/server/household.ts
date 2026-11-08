@@ -40,7 +40,7 @@ export function setupGaps(db: Db): string[] {
   if (people.length === 0) gaps.push("Add the adults in your household.");
   for (const p of people) {
     if (p.birthDate === null) gaps.push(`Add ${p.name}'s birth date.`);
-    if (p.income === 0) gaps.push(`Add ${p.name}'s income (or 0 if not working).`);
+    if (p.income === null) gaps.push(`Add ${p.name}'s income (or 0 if not working).`);
     if (p.employerPlan.type !== "none" && p.employerPlan.matchTiers.length === 0) {
       gaps.push(`Add ${p.name}'s employer match (or none).`);
     }

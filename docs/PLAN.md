@@ -12,7 +12,7 @@ Each phase ends with something usable. See [DESIGN.md](DESIGN.md) for the detail
 
 **Done when:** `npm start` opens an empty Sumday dashboard and CI is green.
 
-## Phase 1: Accounts + import
+## Phase 1: Accounts + import ✅
 - First-run setup wizard and the Settings → Household page: people, household,
   employer plans with match tiers, pensions and Social Security estimates.
 - Accounts (all types, owners, tax treatment).
