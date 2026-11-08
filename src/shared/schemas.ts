@@ -383,6 +383,45 @@ export const holdingsImportSchema = z.object({
 });
 export const investmentsQuerySchema = z.object({ contribution: z.coerce.number().int().min(0).max(100_000_000).optional() });
 
+// ---------- Retirement ----------
+
+const ageField = z.number().int().min(18).max(120);
+export const retirementSettingsSchema = z.object({
+  /** Chance of success to aim for, 0.5–0.99. */
+  successTarget: z.number().min(0.5).max(0.99).optional(),
+  ordinaryTaxPct: z.number().min(0).max(60).optional(),
+  capitalGainsPct: z.number().min(0).max(40).optional(),
+  runs: z.number().int().min(500).max(20_000).optional(),
+  blockLength: z.number().int().min(1).max(15).optional(),
+  includePlanSavings: z.boolean().optional(),
+  spending: z
+    .object({
+      /** Yearly amount in retirement per category id; null or missing = same as today. */
+      categoryOverrides: z.record(z.string(), cents.refine((v) => v >= 0, "Can't be negative.").nullable()),
+      items: z
+        .array(
+          z.object({
+            label: z.string().trim().min(1, "Name the change.").max(80),
+            amount: cents,
+            fromAge: ageField.nullable(),
+            toAge: ageField.nullable(),
+          }),
+        )
+        .max(50),
+      oneOffs: z
+        .array(
+          z.object({
+            label: z.string().trim().min(1, "Name the expense.").max(80),
+            amount: cents.refine((v) => v > 0, "Enter an amount."),
+            age: ageField,
+            everyYears: z.number().int().min(1).max(40).nullable(),
+          }),
+        )
+        .max(50),
+    })
+    .optional(),
+});
+
 // ---------- Imports ----------
 
 export const csvMappingSchema = z.object({

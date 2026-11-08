@@ -65,7 +65,7 @@ function recentCompleteMonths(db: Db, now: IsoDate): string[] {
   return first > last ? [] : monthRange(first, last).slice(-3);
 }
 
-interface Baseline {
+export interface Baseline {
   /** Expected monthly spending per category: from its budget if set, else the recent average. */
   byCategory: Map<number, number>;
   fixed: number;
@@ -75,7 +75,7 @@ interface Baseline {
   months: string[];
 }
 
-function spendingBaseline(db: Db, now: IsoDate): Baseline {
+export function spendingBaseline(db: Db, now: IsoDate): Baseline {
   const months = recentCompleteMonths(db, now);
   const categories = loadBudgetCategories(db);
   const actuals = months.length ? loadActuals(db, months[0]!, months.at(-1)!) : new Map<number, Map<string, number>>();
