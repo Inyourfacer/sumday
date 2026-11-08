@@ -58,7 +58,7 @@ and why.
 **Done when:** you see your real allocation vs target and what to buy with the
 next contribution.
 
-## Phase 5: Retirement
+## Phase 5: Retirement ✅
 - Bundled historical returns dataset (with source/licence note).
 - Monte Carlo engine: block bootstrap, seeded RNG, tax buckets, contributions,
   Social Security, pensions, RMDs, withdrawal order, flat-rate `TaxModel`.

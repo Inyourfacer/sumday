@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { PlanResponse, Recommendation } from "../../shared/api.ts";
+import type { PlanResponse, Recommendation, RetirementResponse } from "../../shared/api.ts";
 import { STEP_TITLES } from "../../engine/plan/waterfall.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { monthTitle } from "../chartMath.ts";
@@ -56,6 +56,7 @@ function Move({ rec, index }: { rec: Recommendation; index: number }) {
 
 export function PlanPage() {
   const plan = useApi<PlanResponse>("/api/plan");
+  const retirement = useApi<RetirementResponse>("/api/retirement");
   const [error, setError] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   if (!plan.data) return plan.error ? <ErrorNote message={plan.error} /> : <Loading />;
@@ -151,9 +152,27 @@ export function PlanPage() {
         </section>
       )}
 
-      {p.alerts.length > 0 && (
+      {(p.alerts.length > 0 || (retirement.data?.result && retirement.data.result.successRate < retirement.data.settings.successTarget)) && (
         <section>
           <h2 className="section-title">Also worth a look</h2>
+          {retirement.data?.result && retirement.data.whatIfs && retirement.data.result.successRate < retirement.data.settings.successTarget && (
+            <div className="panel tight alert">
+              <strong>Retirement: {Math.round(retirement.data.result.successRate * 100)}% chance, below your {Math.round(retirement.data.settings.successTarget * 100)}% target</strong>
+              <p className="small">
+                {[
+                  retirement.data.whatIfs.toReachTarget.extraMonthlySavings !== null &&
+                    `save ${formatMoney(retirement.data.whatIfs.toReachTarget.extraMonthlySavings, { cents: false })}/mo more`,
+                  retirement.data.whatIfs.toReachTarget.retireLaterYears !== null && `retire ${retirement.data.whatIfs.toReachTarget.retireLaterYears} year(s) later`,
+                  retirement.data.whatIfs.toReachTarget.spendLessPerYear !== null &&
+                    `spend ${formatMoney(retirement.data.whatIfs.toReachTarget.spendLessPerYear, { cents: false })}/yr less in retirement`,
+                ]
+                  .filter(Boolean)
+                  .join(", or ")
+                  .replace(/^./, (c) => c.toUpperCase())}
+                . <Link to="/retirement">See the projection →</Link>
+              </p>
+            </div>
+          )}
           {p.alerts.map((a) => (
             <div className="panel tight alert" key={a.title}>
               <strong>{a.title}</strong>

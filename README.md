@@ -7,11 +7,12 @@ your next dollar, using rules and math you can inspect.
 - [Design](docs/DESIGN.md)
 - [Build plan](docs/PLAN.md)
 
-> **Status:** Phases 1–4 are done: household setup, accounts, CSV/OFX import
+> **Status:** Phases 1–5 are done: household setup, accounts, CSV/OFX import
 > with review and undo, categories, rules, transfer matching, the Fixed /
 > Flex / Non-monthly budget, cash flow, recurring bills, net worth, savings
-> goals, debt payoff, **Next best moves**, and investments (holdings, daily
-> prices, mix vs target, rebalancing, fees). Retirement projections come next.
+> goals, debt payoff, **Next best moves**, investments (holdings, daily
+> prices, mix vs target, rebalancing, fees), and a **Monte Carlo retirement
+> projection**. Scenarios, alerts and the monthly report come next.
 
 ## Using it
 
@@ -48,7 +49,15 @@ your next dollar, using rules and math you can inspect.
    S&P 500 trust). The page shows what to buy next and, if you've drifted,
    the cheapest way back.
 
-Contribution limits live in `data/limits/<year>.json`. Add next year's file
+9. **Retirement**: the chance your money lasts, from 10,000 simulated
+   futures built from real market history since 1928, plus the spending you
+   can afford, a "retire at…?" table, and the smallest change that reaches
+   your target. Add Social Security estimates (ssa.gov/myaccount) in
+   Settings → Household, and adjust retirement spending on the page.
+
+Contribution limits live in `data/limits/<year>.json`; market history in
+`data/returns/` and the IRS required-minimum table in `data/rmd/`, each with
+its source. Add next year's file
 when the IRS announces it (usually in November).
 
 ## Running it

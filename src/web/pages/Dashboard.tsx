@@ -1,14 +1,10 @@
 import { addDays } from "../../engine/dates.ts";
-import type { AccountView, BudgetResponse, NetWorthResponse, PlanResponse, RecurringResponse, SummaryResponse } from "../../shared/api.ts";
+import type { AccountView, BudgetResponse, NetWorthResponse, PlanResponse, RecurringResponse, RetirementResponse, SummaryResponse } from "../../shared/api.ts";
 import { useApi } from "../api.ts";
 import { Meter } from "../components/charts.tsx";
 import { Amount, PageHeader } from "../components/ui.tsx";
 import { formatDate, formatMoney, plural } from "../format.ts";
 import { Link } from "../router.tsx";
-
-const LATER = [
-  { title: "Retirement", body: "Chance of success across 10,000 simulated futures.", phase: 5 },
-] as const;
 
 export function DashboardPage({ summary }: { summary: SummaryResponse | undefined }) {
   const accounts = useApi<AccountView[]>("/api/accounts");
@@ -16,6 +12,8 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
   const networth = useApi<NetWorthResponse>("/api/networth?months=2");
   const recurring = useApi<RecurringResponse>("/api/recurring");
   const plan = useApi<PlanResponse>("/api/plan");
+  const retirement = useApi<RetirementResponse>("/api/retirement");
+  const ret = retirement.data;
   const moves = (plan.data?.result.recommendations ?? []).filter((r) => r.status === "act" || r.status === "partial");
   const b = budget.data?.budget;
   const bills = (recurring.data?.upcoming ?? []).filter((u) => u.amount < 0 && !u.isTransfer && u.date <= addDays(recurring.data!.today, 7));
@@ -150,6 +148,27 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
           )}
         </article>
         <article className="card live">
+          <h2>Retirement</h2>
+          {ret?.ready && ret.result ? (
+            <>
+              <p className="big">{Math.round(ret.result.successRate * 100)}%</p>
+              <p className="small">
+                chance your money lasts{" "}
+                {ret.result.successRate >= ret.settings.successTarget ? (
+                  <span className="status ok">on track</span>
+                ) : (
+                  <span className="status over">below {Math.round(ret.settings.successTarget * 100)}% target</span>
+                )}
+              </p>
+              <Link to="/retirement">Projection →</Link>
+            </>
+          ) : (
+            <p>
+              <Link to="/retirement">Set up</Link> to see your chance of retiring on plan.
+            </p>
+          )}
+        </article>
+        <article className="card live">
           <h2>Uncategorized</h2>
           <p className="big">{summary?.uncategorizedCount ?? "–"}</p>
           {summary && summary.uncategorizedCount > 0 ? (
@@ -165,13 +184,6 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
             <Link to="/import">Review and finish →</Link>
           </article>
         )}
-        {LATER.map((c) => (
-          <article key={c.title} className="card">
-            <h2>{c.title}</h2>
-            <p>{c.body}</p>
-            <span className="badge-corner">Phase {c.phase}</span>
-          </article>
-        ))}
       </section>
     </>
   );

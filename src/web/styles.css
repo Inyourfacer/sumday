@@ -1738,6 +1738,110 @@ button.tile.strategy.chosen {
   min-width: 180px;
 }
 
+/* ---------- Retirement ---------- */
+
+.retire-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.hero-bar {
+  display: block;
+  margin-top: 8px;
+}
+
+.hero-facts {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.hero-facts dt {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.hero-facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.chart .band-wide-fill {
+  fill: var(--series-1);
+  opacity: 0.1;
+}
+
+.chart .band-mid-fill {
+  fill: var(--series-1);
+  opacity: 0.22;
+}
+
+.swatch.band-wide {
+  background: var(--series-1);
+  opacity: 0.18;
+}
+
+.swatch.band-mid {
+  background: var(--series-1);
+  opacity: 0.4;
+}
+
+.chart .marker {
+  stroke: var(--text);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+.legend-axis {
+  margin-left: auto;
+}
+
+.chart .marker-label {
+  fill: var(--muted);
+}
+
+.retire-at {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.retire-at li {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) 60px;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.retire-at li.current .ra-age {
+  font-weight: 700;
+}
+
+.ra-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.item-row {
+  margin-bottom: 8px;
+}
+
+.item-row .field input {
+  max-width: 220px;
+}
+
+.assumptions {
+  padding-left: 18px;
+  margin-top: 12px;
+}
+
+.assumptions li {
+  margin-bottom: 4px;
+}
+
 /* ---------- Modal ---------- */
 
 .overlay {
@@ -1880,6 +1984,14 @@ code {
 
   .mix-rows li {
     grid-template-columns: 1fr auto;
+  }
+
+  .retire-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .retire-at li {
+    grid-template-columns: 90px minmax(0, 1fr) 48px;
   }
 
   .mix-bar {

@@ -6,6 +6,7 @@ import { registerAccountRoutes } from "./accounts.ts";
 import { registerBudgetRoutes } from "./budget.ts";
 import { registerPlanRoutes } from "./plan.ts";
 import { registerInvestmentRoutes } from "./investments.ts";
+import { registerRetirementRoutes } from "./retirement.ts";
 import { tiingoProvider, type PriceProvider } from "./prices.ts";
 import { registerCategoryRoutes } from "./categories.ts";
 import { schemaVersion, type Db } from "./db.ts";
@@ -64,6 +65,7 @@ export async function buildApp({ db, webDir, logger = false, priceProvider }: Ap
   registerBudgetRoutes(app, db);
   registerPlanRoutes(app, db);
   registerInvestmentRoutes(app, db, prices);
+  registerRetirementRoutes(app, db);
 
   if (webDir !== undefined && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });

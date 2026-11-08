@@ -25,7 +25,7 @@ export interface PlanSettings {
 }
 
 export interface PlanAlert {
-  kind: "idle_cash" | "cash_yield" | "promo_ending" | "rebalance" | "fees" | "unclassified";
+  kind: "idle_cash" | "cash_yield" | "promo_ending" | "rebalance" | "fees" | "unclassified" | "retirement";
   title: string;
   message: string;
   facts: Fact[];
@@ -152,6 +152,49 @@ export interface HoldingsImportResult {
   removed: number;
   skipped: { line: number; reason: string }[];
   value: number;
+}
+
+export interface RetirementResponse {
+  ready: boolean;
+  /** What's missing before a projection can run. */
+  missing: string[];
+  settings: {
+    successTarget: number;
+    ordinaryTaxPct: number;
+    capitalGainsPct: number;
+    runs: number;
+    blockLength: number;
+    includePlanSavings: boolean;
+  };
+  inputs: {
+    startYear: number;
+    endYear: number;
+    retireYear: number;
+    people: {
+      id: number;
+      name: string;
+      birthYear: number;
+      retirementAge: number;
+      claimAge: number;
+      socialSecurityMonthly: number | null;
+      pension: { monthly: number; startAge: number; cola: boolean } | null;
+      rmdStartAge: number;
+    }[];
+    balances: { taxable: number; traditional: number; roth: number; hsa: number; total: number };
+    allocation: { stocks: number; bonds: number; cash: number };
+    feePct: number;
+    extraSavings: { total: number; fromPlan: boolean };
+    spending: {
+      categories: { categoryId: number; name: string; current: number; retirement: number | null }[];
+      items: { label: string; amount: number; fromAge: number | null; toAge: number | null }[];
+      oneOffs: { label: string; amount: number; age: number; everyYears: number | null }[];
+      /** Regular yearly spending when retirement starts (one-off costs not included), today's dollars. */
+      firstYear: number;
+    };
+  } | null;
+  result: import("../engine/retire/montecarlo.ts").SimResult | null;
+  whatIfs: import("../engine/retire/montecarlo.ts").WhatIfs | null;
+  sources: { returns: string; returnsYears: string; rmd: string };
 }
 
 export interface DebtView {
