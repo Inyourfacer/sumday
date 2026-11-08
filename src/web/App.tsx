@@ -5,6 +5,8 @@ import { AccountDetailPage, AccountsPage } from "./pages/Accounts.tsx";
 import { BudgetPage } from "./pages/Budget.tsx";
 import { DebtPage } from "./pages/Debt.tsx";
 import { GoalsPage } from "./pages/Goals.tsx";
+import { HoldingsImportPage } from "./pages/HoldingsImport.tsx";
+import { InvestmentsPage } from "./pages/Investments.tsx";
 import { PlanPage } from "./pages/Plan.tsx";
 import { CashFlowPage } from "./pages/CashFlow.tsx";
 import { RecurringPage } from "./pages/Recurring.tsx";
@@ -55,6 +57,8 @@ function route(path: string, summary: SummaryResponse | undefined): ReactNode {
   if (path === "/plan") return <PlanPage />;
   if (path === "/goals") return <GoalsPage />;
   if (path === "/debt") return <DebtPage />;
+  if (path === "/investments") return <InvestmentsPage />;
+  if (path === "/investments/import") return <HoldingsImportPage />;
   if (path === "/cashflow") return <CashFlowPage />;
   if (path === "/recurring") return <RecurringPage />;
   if (path === "/import") return <ImportPage />;
@@ -97,7 +101,7 @@ export function App() {
     { to: "/recurring", label: "Recurring" },
     { to: "/goals", label: "Goals" },
     { to: "/debt", label: "Debt" },
-    { to: "/investments", label: "Investments", phase: 4 },
+    { to: "/investments", label: "Investments" },
     { to: "/retirement", label: "Retirement", phase: 5 },
     { to: "/scenarios", label: "Scenarios", phase: 6 },
   ];

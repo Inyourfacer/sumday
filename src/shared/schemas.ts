@@ -333,6 +333,56 @@ export const debtQuerySchema = z.object({
   extra: z.coerce.number().int().min(0).max(100_000_000).optional(),
 });
 
+// ---------- Investments ----------
+
+export const ASSET_CLASS_IDS = ["us_stock", "intl_stock", "bonds", "cash", "real_estate", "other"] as const;
+const fraction = z.number().min(0).max(1);
+export const assetMixSchema = z.partialRecord(z.enum(ASSET_CLASS_IDS), fraction);
+export const ticker = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z][A-Z0-9.-]{0,9}$/, "That doesn't look like a ticker.");
+
+export const targetSchema = z.object({ target: assetMixSchema });
+export const holdingInputSchema = z.object({
+  accountId: id,
+  ticker: ticker.nullable().default(null),
+  name: z.string().trim().max(120).default(""),
+  shares: z.number().refine((v) => Number.isFinite(v) && v !== 0, "Enter the number of shares."),
+  costBasis: cents.nullable().default(null),
+  /** Price per share today, in dollars, if you know it (otherwise the price feed fills it in). */
+  price: z.number().positive().nullable().default(null),
+});
+export const holdingPatchSchema = z.object({
+  shares: z.number().refine((v) => Number.isFinite(v) && v !== 0, "Enter the number of shares.").optional(),
+  costBasis: cents.nullable().optional(),
+});
+export const securityPatchSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  ticker: ticker.nullable().optional(),
+  proxyTicker: ticker.nullable().optional(),
+  expenseRatio: z.number().min(0).max(10).nullable().optional(),
+  mix: assetMixSchema.nullable().optional(),
+});
+export const manualPriceSchema = z.object({ date: isoDate, close: z.number().positive() });
+export const holdingsMappingSchema = z.object({
+  hasHeader: z.boolean(),
+  symbolColumn: z.number().int().min(0).optional(),
+  nameColumn: z.number().int().min(0).optional(),
+  quantityColumn: z.number().int().min(0),
+  priceColumn: z.number().int().min(0).optional(),
+  valueColumn: z.number().int().min(0).optional(),
+  costBasisColumn: z.number().int().min(0).optional(),
+});
+export const holdingsImportSchema = z.object({
+  accountId: id,
+  fileName: z.string().max(255),
+  content: z.string().min(1, "The file is empty.").max(5_000_000),
+  mapping: holdingsMappingSchema.optional(),
+});
+export const investmentsQuerySchema = z.object({ contribution: z.coerce.number().int().min(0).max(100_000_000).optional() });
+
 // ---------- Imports ----------
 
 export const csvMappingSchema = z.object({

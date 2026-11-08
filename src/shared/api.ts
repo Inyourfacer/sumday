@@ -25,7 +25,7 @@ export interface PlanSettings {
 }
 
 export interface PlanAlert {
-  kind: "idle_cash" | "cash_yield" | "promo_ending";
+  kind: "idle_cash" | "cash_yield" | "promo_ending" | "rebalance" | "fees" | "unclassified";
   title: string;
   message: string;
   facts: Fact[];
@@ -70,6 +70,88 @@ export interface GoalView {
   /** What the plan puts toward this goal each month right now. */
   plannedMonthly: number;
   emergency?: { months: number; essentialMonthly: number; autoTarget: number; basis: "earmarked" | "savings_accounts" };
+}
+
+export type AssetClassId = "us_stock" | "intl_stock" | "bonds" | "cash" | "real_estate" | "other";
+export type Mix = Partial<Record<AssetClassId, number>>;
+
+export interface HoldingView {
+  id: number;
+  accountId: number;
+  securityId: number;
+  ticker: string | null;
+  name: string;
+  shares: number;
+  price: number | null;
+  priceDate: string | null;
+  priceSource: string | null;
+  value: number;
+  costBasis: number | null;
+  gain: number | null;
+  mix: Mix | null;
+  mixSource: "known" | "guessed" | "manual" | null;
+  expenseRatio: number | null;
+  proxyTicker: string | null;
+  priceError: string | null;
+}
+
+export interface InvestmentsResponse {
+  accounts: {
+    id: number;
+    name: string;
+    type: string;
+    taxTreatment: string;
+    ownerName: string | null;
+    value: number;
+    /** Money-weighted yearly return, when there's enough history. */
+    xirr: number | null;
+    holdings: HoldingView[];
+  }[];
+  total: number;
+  unclassified: number;
+  target: Mix;
+  targetIsDefault: boolean;
+  drift: { assetClass: AssetClassId; value: number; current: number; target: number; drift: number; band: number; status: "in" | "over" | "under" }[];
+  outOfBand: boolean;
+  nextContribution: {
+    amount: number;
+    /** Where the amount came from: the plan's investing steps, or what you typed. */
+    source: "plan" | "chosen";
+    split: { assetClass: AssetClassId; amount: number; suggestion: { label: string; accountName: string } | null }[];
+  };
+  rebalance: {
+    needed: boolean;
+    trades: { where: "tax_advantaged" | "taxable"; sell: AssetClassId; buy: AssetClassId; amount: number }[];
+    taxableSales: { holdingId: number; label: string; accountName: string; amount: number; estimatedGain: number | null }[];
+    remaining: { assetClass: AssetClassId; amount: number }[];
+  };
+  locationHints: { kind: string; amount: number; message: string }[];
+  fees: {
+    weighted: number | null;
+    knownValue: number;
+    unknownValue: number;
+    yearly: number;
+    drag10: number;
+    drag30: number;
+    expensive: { holdingId: number; label: string; accountName: string; expenseRatio: number; value: number }[];
+  };
+  prices: { provider: string; configured: boolean; latest: string | null; errors: { label: string; message: string }[] };
+}
+
+export interface HoldingsInspectResult {
+  columns: string[];
+  sampleRows: string[][];
+  mapping?: import("../engine/invest/positions.ts").HoldingsMapping;
+  mappingSource: "saved" | "suggested" | "none";
+  notes: string[];
+}
+
+export interface HoldingsImportResult {
+  added: number;
+  updated: number;
+  removed: number;
+  skipped: { line: number; reason: string }[];
+  value: number;
 }
 
 export interface DebtView {
