@@ -9,6 +9,7 @@ describe("loadConfig", () => {
       port: 4321,
       host: "127.0.0.1",
       webDir: "/home/me/sumday/dist",
+      backupDir: "/home/me/sumday/var/backups",
     });
   });
 
@@ -17,6 +18,7 @@ describe("loadConfig", () => {
     expect(config.dbPath).toBe("/data/money.db");
     expect(config.port).toBe(8080);
     expect(config.host).toBe("127.0.0.1");
+    expect(loadConfig({ SUMDAY_BACKUP_DIR: "/backups" }).backupDir).toBe("/backups");
   });
 
   it("rejects a bad port", () => {

@@ -71,7 +71,7 @@ next contribution.
 **Done when:** you get a success probability you trust, and you can trace how
 it was calculated.
 
-## Phase 6: Scenarios, alerts, monthly report
+## Phase 6: Scenarios, alerts, monthly report ✅
 - Scenarios with overrides, side-by-side comparison of up to 3, and promoting
   one to the base plan.
 - Alert engine with editable thresholds; dashboard alerts and desktop

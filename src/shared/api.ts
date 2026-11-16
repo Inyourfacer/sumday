@@ -192,9 +192,40 @@ export interface RetirementResponse {
       firstYear: number;
     };
   } | null;
+  /** Changes promoted from scenarios, in order (remove with DELETE /api/retirement/events/:index). */
+  events: string[];
   result: import("../engine/retire/montecarlo.ts").SimResult | null;
   whatIfs: import("../engine/retire/montecarlo.ts").WhatIfs | null;
   sources: { returns: string; returnsYears: string; rmd: string };
+}
+
+export interface ScenarioView {
+  id: number;
+  name: string;
+  overrides: import("./schemas.ts").OverrideInput[];
+  /** One line per change. */
+  summary: string[];
+}
+
+export interface ScenarioComparison {
+  ready: boolean;
+  missing: string[];
+  target: number;
+  /** The first row is your plan as it is today. */
+  rows: {
+    id: number | null;
+    name: string;
+    summary: string[];
+    successRate: number;
+    retireYear: number;
+    medianAtRetirement: number;
+    medianAtEnd: number;
+    medianDepletionYear: number | null;
+    affordableSpending: number;
+    ongoingSpending: number;
+    extraSavingsMonthly: number;
+    median: { year: number; value: number }[];
+  }[];
 }
 
 export interface DebtView {
@@ -439,4 +470,109 @@ export interface ImportInspectResult {
   notes?: string[];
   /** OFX only. */
   ofx?: { transactionCount: number; accountIdLast4: string | null; ledgerBalance: { date: string; amount: number } | null };
+}
+
+// ---------- Alerts ----------
+
+export type AlertKind = (typeof import("./schemas.ts").ALERT_KINDS)[number];
+
+export interface AlertSettings {
+  /** Flex spending this far ahead of the month's pace raises an alert. */
+  flexPacePct: number;
+  billChangePct: number;
+  /** Any single charge at least this big (cents). */
+  largeAmount: number;
+  /** Or this many times the category's usual charge. */
+  largeMultiple: number;
+  /** Checking floor before the next paycheck (cents). */
+  lowCash: number;
+  promoDays: number;
+  staleDays: number;
+  disabled: AlertKind[];
+  /** Show new alerts as desktop notifications while Sumday is open. */
+  desktop: boolean;
+}
+
+export interface AlertView {
+  key: string;
+  kind: AlertKind;
+  severity: "warning" | "info";
+  title: string;
+  message: string;
+  facts: Fact[];
+  link: string | null;
+}
+
+export interface AlertsResponse {
+  alerts: AlertView[];
+  dismissedCount: number;
+  settings: AlertSettings;
+}
+
+// ---------- Reports, backups ----------
+
+export interface MonthlyReport {
+  month: string;
+  generatedAt: string;
+  /** The day the numbers were taken (goals, plan and retirement are as of then). */
+  asOf: string;
+  budget: {
+    income: number;
+    expectedIncome: number | null;
+    spending: number;
+    net: number;
+    savingsRate: number | null;
+    fixed: { budget: number; actual: number };
+    flex: { budget: number | null; actual: number };
+    nonMonthly: { budget: number; actual: number };
+    savings: { planned: number; actual: number };
+  };
+  /** How many earlier months the averages use (up to 12). */
+  averageMonths: number;
+  topCategories: { name: string; budgetType: string; actual: number; average: number; change: number }[];
+  /** Biggest moves against the average. */
+  changes: { name: string; budgetType: string; actual: number; average: number; change: number }[];
+  newRecurring: { payee: string; amount: number; frequency: string; accountName: string }[];
+  netWorth: { start: number; end: number; change: number; fromCashFlow: number; marketAndOther: number; debtPaidDown: number } | null;
+  goals: { name: string; saved: number; target: number; percent: number; status: string; targetDate: string | null }[];
+  debt: { total: number; paidDown: number | null; accounts: { name: string; balance: number; apr: number | null }[] };
+  drift: { outOfBand: boolean; rows: { assetClass: string; current: number; target: number; status: string }[] } | null;
+  retirement: {
+    successRate: number;
+    target: number;
+    retireYear: number;
+    portfolio: number;
+    previous: { month: string; successRate: number; portfolio: number } | null;
+  } | null;
+  moves: { title: string; action: string; amount: number; why: string }[];
+  alerts: { kind: string; title: string; message: string }[];
+  dataHealth: { stale: string[]; uncategorized: number; uncategorizedAmount: number };
+}
+
+export interface ReportSummary {
+  month: string;
+  createdAt: string;
+  income: number;
+  spending: number;
+  savingsRate: number | null;
+  netWorthChange: number | null;
+  successRate: number | null;
+}
+
+export interface ReportsResponse {
+  reports: ReportSummary[];
+  lastMonth: string;
+}
+
+export interface BackupView {
+  name: string;
+  date: string;
+  size: number;
+  createdAt: string;
+}
+
+export interface BackupsResponse {
+  dir: string | null;
+  keep: number;
+  backups: BackupView[];
 }

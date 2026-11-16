@@ -8,8 +8,8 @@ loadDotEnv();
 const config = loadConfig();
 const db = openDb(config.dbPath);
 const prices = tiingoProvider(process.env.TIINGO_API_KEY);
-const app = await buildApp({ db, webDir: config.webDir, priceProvider: prices });
-const stopJobs = startScheduler(db, prices);
+const app = await buildApp({ db, webDir: config.webDir, priceProvider: prices, backupDir: config.backupDir });
+const stopJobs = startScheduler(db, prices, { backupDir: config.backupDir });
 
 const shutdown = async (signal: string) => {
   console.log(`\n${signal} received, shutting down.`);
@@ -24,3 +24,4 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 await app.listen({ host: config.host, port: config.port });
 console.log(`Sumday is running at http://${config.host}:${config.port}`);
 console.log(`Database: ${config.dbPath} (schema v${schemaVersion(db)})`);
+console.log(`Backups: ${config.backupDir}`);

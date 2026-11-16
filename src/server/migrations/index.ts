@@ -263,4 +263,30 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE accounts ADD COLUMN holdings_mapping TEXT CHECK (holdings_mapping IS NULL OR json_valid(holdings_mapping));
     `,
   },
+  {
+    version: 6,
+    name: "scenarios, alerts, reports",
+    sql: `
+      CREATE TABLE scenarios (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL,
+        overrides  TEXT NOT NULL CHECK (json_valid(overrides)),
+        created_at TEXT NOT NULL DEFAULT ${NOW},
+        updated_at TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+
+      -- Alerts you've dismissed; each alert has a stable key, so it stays dismissed until something new happens.
+      CREATE TABLE alert_dismissals (
+        key          TEXT PRIMARY KEY,
+        dismissed_at TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+
+      -- Monthly reviews, kept as generated so they're a record of that month.
+      CREATE TABLE reports (
+        month      TEXT PRIMARY KEY,
+        data       TEXT NOT NULL CHECK (json_valid(data)),
+        created_at TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+    `,
+  },
 ];

@@ -1,6 +1,7 @@
 import { addDays } from "../../engine/dates.ts";
 import type { AccountView, BudgetResponse, NetWorthResponse, PlanResponse, RecurringResponse, RetirementResponse, SummaryResponse } from "../../shared/api.ts";
 import { useApi } from "../api.ts";
+import { AlertsPanel } from "../components/Alerts.tsx";
 import { Meter } from "../components/charts.tsx";
 import { Amount, PageHeader } from "../components/ui.tsx";
 import { formatDate, formatMoney, plural } from "../format.ts";
@@ -65,6 +66,8 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
           )}
         </section>
       )}
+
+      <AlertsPanel />
 
       {plan.data && (
         <section className="panel next-moves">

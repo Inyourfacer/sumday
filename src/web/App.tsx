@@ -8,6 +8,11 @@ import { GoalsPage } from "./pages/Goals.tsx";
 import { HoldingsImportPage } from "./pages/HoldingsImport.tsx";
 import { InvestmentsPage } from "./pages/Investments.tsx";
 import { RetirementPage } from "./pages/Retirement.tsx";
+import { ScenariosPage } from "./pages/Scenarios.tsx";
+import { ReportPage, ReportsPage } from "./pages/Reports.tsx";
+import { SettingsAlertsPage } from "./pages/SettingsAlerts.tsx";
+import { SettingsDataPage } from "./pages/SettingsData.tsx";
+import { useDesktopAlerts } from "./desktopAlerts.ts";
 import { PlanPage } from "./pages/Plan.tsx";
 import { CashFlowPage } from "./pages/CashFlow.tsx";
 import { RecurringPage } from "./pages/Recurring.tsx";
@@ -61,6 +66,11 @@ function route(path: string, summary: SummaryResponse | undefined): ReactNode {
   if (path === "/investments") return <InvestmentsPage />;
   if (path === "/retirement") return <RetirementPage />;
   if (path === "/investments/import") return <HoldingsImportPage />;
+  if (path === "/scenarios") return <ScenariosPage />;
+  if (path === "/reports") return <ReportsPage />;
+  if ((m = matchPath("/reports/:month", path))) return <ReportPage key={m.month} month={m.month!} />;
+  if (path === "/settings/alerts") return <SettingsAlertsPage />;
+  if (path === "/settings/data") return <SettingsDataPage />;
   if (path === "/cashflow") return <CashFlowPage />;
   if (path === "/recurring") return <RecurringPage />;
   if (path === "/import") return <ImportPage />;
@@ -83,6 +93,7 @@ export function App() {
   const { reload: refetchSummary } = summary;
   const reloadSummary = useCallback(() => void refetchSummary(), [refetchSummary]);
   useDataChanged(reloadSummary);
+  useDesktopAlerts();
 
   // First run: send people to the setup wizard (they can skip it).
   useEffect(() => {
@@ -105,12 +116,15 @@ export function App() {
     { to: "/debt", label: "Debt" },
     { to: "/investments", label: "Investments" },
     { to: "/retirement", label: "Retirement" },
-    { to: "/scenarios", label: "Scenarios", phase: 6 },
+    { to: "/scenarios", label: "Scenarios" },
+    { to: "/reports", label: "Reports" },
   ];
   const settings: NavItem[] = [
     { to: "/settings/household", label: "Household" },
     { to: "/settings/categories", label: "Categories" },
     { to: "/settings/rules", label: "Rules" },
+    { to: "/settings/alerts", label: "Alerts" },
+    { to: "/settings/data", label: "Backups & export" },
   ];
 
   return (

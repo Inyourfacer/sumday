@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { simulate, whatIfs, type HistoricalYear, type SimInput, type SimPerson } from "./montecarlo.ts";
 import { benefitAtClaim, fullRetirementAge, requiredMinimum, rmdStartAge, seededRandom, type RmdTable } from "./rules.ts";
 import { spendingAtAge, type SpendingPlan } from "./spending.ts";
+import { applyOverrides, describeOverride } from "./overrides.ts";
 
 const RMD = JSON.parse(readFileSync(new URL("../../../data/rmd/uniform-lifetime.json", import.meta.url), "utf8")) as RmdTable;
 const HISTORY = (JSON.parse(readFileSync(new URL("../../../data/returns/us-annual.json", import.meta.url), "utf8")) as { years: HistoricalYear[] }).years;
@@ -172,6 +173,54 @@ describe("simulation mechanics (constant 5% returns, no inflation)", () => {
     // Year 1: $5,000 + $5,000 match, then 5%.
     expect(r.bands[0]!.p50).toBe(Math.round(1_000_000 * 1.05));
     expect(r.retireYear).toBe(2055);
+  });
+});
+
+describe("lump sums and scenario overrides", () => {
+  it("adds money in and pays money out in the year given", () => {
+    const base = input({ spending: Array(30).fill(0) });
+    const inheritance = simulate({ ...base, lumpSums: [{ year: 2026, amount: 10_000_000 }] });
+    expect(inheritance.bands[0]!.p50).toBe(Math.round(110_000_000 * 1.05));
+    const wedding = simulate({ ...base, lumpSums: [{ year: 2026, amount: -5_000_000 }] });
+    expect(wedding.bands[0]!.p50).toBe(Math.round(95_000_000 * 1.05));
+    const tooMuch = simulate({ ...base, lumpSums: [{ year: 2027, amount: -500_000_000 }] });
+    expect(tooMuch.medianDepletionYear).toBe(2027);
+  });
+
+  it("applies overrides without touching the original", () => {
+    const worker = retiree({ birthYear: 1990, income: 10_000_000, retirementAge: 65 });
+    const base = input({ people: [worker], spending: Array(30).fill(4_000_000) });
+    const changed = applyOverrides(base, [
+      { type: "retirement_age", personId: 1, age: 60 },
+      { type: "income", personId: 1, income: 12_000_000, pretaxPct: 10 },
+      { type: "extra_savings", monthly: 50_000 },
+      { type: "retirement_spending", annualChange: -1_000_000 },
+      { type: "lump_sum", label: "Inheritance", year: 2030, amount: 5_000_000 },
+      { type: "allocation", stocks: 0.5, bonds: 0.5, cash: 0 },
+      { type: "home_purchase", year: 2028, downPayment: 8_000_000, monthlyCostChange: 100_000 },
+    ]);
+    expect(base.people[0]!.retirementAge).toBe(65);
+    expect(changed.people[0]).toMatchObject({ retirementAge: 60, income: 12_000_000, pretaxPct: 10 });
+    expect(changed.extraSavings.taxable).toBe(600_000);
+    expect(changed.allocation).toEqual({ stocks: 0.5, bonds: 0.5, cash: 0 });
+    // Spending: −$10,000 a year everywhere, +$12,000 housing from 2028.
+    expect(changed.spending[0]).toBe(3_000_000);
+    expect(changed.spending[2]).toBe(3_000_000 + 1_200_000);
+    // Down payment in 2028, plus the higher housing cost out of savings each working year until 2050.
+    expect(changed.lumpSums!.filter((l) => l.year === 2028).map((l) => l.amount).sort((a, b) => a - b)).toEqual([-8_000_000, -1_200_000]);
+    expect(changed.lumpSums!.filter((l) => l.amount === -1_200_000)).toHaveLength(2050 - 2028);
+    expect(changed.lumpSums).toContainEqual({ year: 2030, amount: 5_000_000 });
+    expect(base.lumpSums).toBeUndefined();
+  });
+
+  it("describes overrides in words", () => {
+    const who = new Map([[1, "Alex"]]);
+    expect(describeOverride({ type: "retirement_age", personId: 1, age: 60 }, who)).toBe("Alex retires at 60");
+    expect(describeOverride({ type: "income", personId: 1, income: 0, pretaxPct: null }, who)).toBe("Alex stops working");
+    expect(describeOverride({ type: "retirement_spending", annualChange: -500_000 }, who)).toBe("Spend $5,000 less a year in retirement");
+    expect(describeOverride({ type: "home_purchase", year: 2029, downPayment: 8_000_000, monthlyCostChange: 75_000 }, who)).toBe(
+      "Buy a home in 2029: $80,000 down, housing +$750/mo",
+    );
   });
 });
 

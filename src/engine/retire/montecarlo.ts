@@ -65,6 +65,12 @@ export interface SimInput {
   extraSavings: { taxable: number; roth: number; hsa: number; traditional: Record<number, number> };
   /** Retirement spending for each simulated year (index 0 = startYear), today's dollars. */
   spending: number[];
+  /**
+   * One-time amounts in any year, today's dollars: positive adds to taxable
+   * savings (an inheritance, a sale); negative is paid out like spending
+   * (a down payment, a wedding).
+   */
+  lumpSums?: { year: number; amount: number }[];
   taxes: { ordinaryPct: number; capitalGainsPct: number };
   history: readonly HistoricalYear[];
   rmd: RmdTable;
@@ -143,6 +149,40 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
   let cumInfl = 1;
   let depletedAt: number | null = null;
 
+  /** Pay `need` (after tax) from savings in order: taxable, pre-tax, Roth, HSA. Returns what couldn't be paid. */
+  const withdraw = (need: number): number => {
+    if (need > 0 && taxable > 0) {
+      const basisReal = Math.min(taxable, basisNominal / cumInfl);
+      const gainShare = Math.max(0, 1 - basisReal / taxable);
+      const gross = Math.min(taxable, need / (1 - gainShare * cg));
+      basisNominal *= 1 - gross / taxable;
+      taxable -= gross;
+      need -= gross * (1 - gainShare * cg);
+    }
+    if (need > 0) {
+      let tradTotal = 0;
+      for (let k = 0; k < n; k++) tradTotal += trad[k]!;
+      if (tradTotal > 0) {
+        const gross = Math.min(tradTotal, need / (1 - ord));
+        for (let k = 0; k < n; k++) trad[k] = trad[k]! - gross * (trad[k]! / tradTotal);
+        need -= gross * (1 - ord);
+      }
+    }
+    if (need > 0) {
+      const take = Math.min(roth, need);
+      roth -= take;
+      need -= take;
+    }
+    if (need > 0) {
+      const take = Math.min(hsa, need);
+      hsa -= take;
+      need -= take;
+    }
+    return need;
+  };
+  const lumps = new Map<number, number>();
+  for (const l of input.lumpSums ?? []) lumps.set(l.year, (lumps.get(l.year) ?? 0) + l.amount);
+
   for (let t = 0; t < T; t++) {
     const year = input.startYear + t;
     const h = input.history[years[t]!]!;
@@ -177,6 +217,17 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       for (let k = 0; k < n; k++) trad[k] = trad[k]! + extraTrad[k]!;
     }
 
+    // One-time amounts this year.
+    const lump = lumps.get(year) ?? 0;
+    if (lump > 0) {
+      taxable += lump;
+      basisNominal += lump * cumInfl;
+    } else if (lump < 0 && withdraw(-lump) > 0.5) {
+      depletedAt = year;
+      totals[t] = 0;
+      continue;
+    }
+
     // Retirement: withdraw what income doesn't cover.
     if (year >= retireYear) {
       let need = input.spending[t] ?? 0;
@@ -204,33 +255,7 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
         } else need -= net;
       }
 
-      if (need > 0 && taxable > 0) {
-        const basisReal = Math.min(taxable, basisNominal / cumInfl);
-        const gainShare = Math.max(0, 1 - basisReal / taxable);
-        const gross = Math.min(taxable, need / (1 - gainShare * cg));
-        basisNominal *= 1 - gross / taxable;
-        taxable -= gross;
-        need -= gross * (1 - gainShare * cg);
-      }
-      if (need > 0) {
-        let tradTotal = 0;
-        for (let k = 0; k < n; k++) tradTotal += trad[k]!;
-        if (tradTotal > 0) {
-          const gross = Math.min(tradTotal, need / (1 - ord));
-          for (let k = 0; k < n; k++) trad[k] = trad[k]! - (gross * (trad[k]! / tradTotal));
-          need -= gross * (1 - ord);
-        }
-      }
-      if (need > 0) {
-        const take = Math.min(roth, need);
-        roth -= take;
-        need -= take;
-      }
-      if (need > 0) {
-        const take = Math.min(hsa, need);
-        hsa -= take;
-        need -= take;
-      }
+      need = withdraw(need);
       if (need > 0.5) {
         depletedAt = year;
         totals[t] = 0;
@@ -301,6 +326,18 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
   };
 }
 
+/**
+ * Yearly retirement spending (scaling the whole plan) that still meets the
+ * target, in the same units as `reference` (the plan's ongoing spending).
+ */
+export function affordableSpending(input: SimInput, target: number, retireYear: number, reference: number, runs = 1500): number {
+  const t0 = Math.max(0, retireYear - input.startYear);
+  const rate = (m: number) =>
+    simulate({ ...input, runs, spending: input.spending.map((s, t) => (t >= t0 ? s * m : s)) }, { bands: false }).successRate;
+  const m = solve(0, 3, (x) => rate(x) >= target, 12, false);
+  return m === null ? 0 : Math.round(reference * m);
+}
+
 /** Bisection on a monotonic "more is better" (or worse) knob. */
 function solve(lo: number, hi: number, ok: (x: number) => boolean, steps: number, wantSmallestOk: boolean): number | null {
   if (wantSmallestOk) {
@@ -344,9 +381,7 @@ export function whatIfs(input: SimInput, target: number, base: SimResult, runs =
   const t0 = Math.max(0, retireYear - input.startYear);
   const firstSpend = ongoingSpending ?? input.spending[t0] ?? 0;
 
-  const scaled = (m: number) => ({ ...quick, spending: input.spending.map((s, t) => (t >= t0 ? s * m : s)) });
-  const m = solve(0, 3, (x) => rate(scaled(x)) >= target, 12, false);
-  const sustainableSpending = m === null ? 0 : Math.round(firstSpend * m);
+  const sustainableSpending = affordableSpending(input, target, retireYear, firstSpend, runs);
 
   const retireAt: WhatIfs["retireAt"] = [];
   for (let shift = -3; shift <= 3; shift++) {
