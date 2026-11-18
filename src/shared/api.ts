@@ -26,6 +26,11 @@ export interface PlanSettings {
   marginalTaxPct: number | null;
 }
 
+/** What each move would become under a different step order. */
+export interface PlanPreviewResponse {
+  changes: { key: string; title: string; before: number; after: number }[];
+}
+
 /** What each move is worth to retirement (see server/moveImpact.ts). */
 export interface MoveImpactsResponse {
   available: boolean;
@@ -51,6 +56,8 @@ export interface PlanResponse {
     /** expectedIncome − fixed − nonMonthly − flex, or null without expected income. */
     computed: number | null;
     override: number | null;
+    /** The usual swing in `computed` (25th–75th percentile of Flex spending over up to 12 months); null with under 4 months of data. */
+    range: { low: number; high: number; months: number } | null;
     /** Complete months the averages use. */
     averagedMonths: string[];
     essentialMonthly: number;

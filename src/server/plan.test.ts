@@ -231,6 +231,36 @@ describe("partial updates keep other fields", () => {
     expect((await call("POST", "/api/plan/moves", { key: "nope", action: "done" })).status).toBe(404);
   });
 
+  it("previews a different step order without saving it", async () => {
+    const before = await ok<PlanResponse>("GET", "/api/plan");
+    const swapped = [...before.settings.steps];
+    const i = swapped.findIndex((s) => s.id === "full_emergency");
+    const j = swapped.findIndex((s) => s.id === "high_interest_debt");
+    [swapped[i], swapped[j]] = [swapped[j]!, swapped[i]!];
+    const preview = await ok<{ changes: { key: string; before: number; after: number }[] }>("POST", "/api/plan/preview", { steps: swapped });
+    expect(preview.changes.length).toBeGreaterThan(0);
+    expect(preview.changes.every((c) => c.before !== c.after)).toBe(true);
+    const after = await ok<PlanResponse>("GET", "/api/plan");
+    expect(after.settings.steps).toEqual(before.settings.steps);
+    expect((await call("POST", "/api/plan/preview", { steps: swapped.slice(1) })).status).toBe(400);
+  });
+
+  it("shows how much the available amount usually swings", async () => {
+    expect((await ok<PlanResponse>("GET", "/api/plan")).basis.range).toBeNull(); // only 3 months of data
+    for (let back = 4; back <= 9; back++) {
+      await ok("POST", "/api/transactions", {
+        accountId: accounts.checking!.id,
+        date: `${nextMonth(today.slice(0, 7), -back)}-10`,
+        amount: -(40_000 + back * 15_000),
+        payee: "Grocer",
+        categoryId: cats.get("Groceries")!.id,
+      });
+    }
+    const range = (await ok<PlanResponse>("GET", "/api/plan")).basis.range!;
+    expect(range.months).toBe(9);
+    expect(range.low).toBeLessThan(range.high);
+  });
+
   it("sizes what each move does for retirement", async () => {
     const res = await ok<MoveImpactsResponse>("GET", "/api/plan/impacts");
     expect(res.available).toBe(true);

@@ -4,7 +4,7 @@
  * its target, and the rest spills to the next step. Every recommendation
  * carries the rule that produced it and the numbers it used.
  */
-import { parseIsoDate, type IsoDate } from "../dates.ts";
+import { monthsBetween, parseIsoDate, type IsoDate } from "../dates.ts";
 import { multiplyCents, type Cents } from "../money.ts";
 import { payoffPlan, type Debt } from "./debt.ts";
 import { hsaLimit, iraLimit, workplaceLimit, type ContributionLimits, type FilingStatus } from "./limits.ts";
@@ -14,6 +14,7 @@ export const STEP_IDS = [
   "employer_match",
   "high_interest_debt",
   "full_emergency",
+  "near_goals",
   "hsa",
   "ira",
   "max_workplace",
@@ -28,6 +29,7 @@ export const STEP_TITLES: Record<StepId, string> = {
   employer_match: "Employer 401(k) match",
   high_interest_debt: "High-interest debt",
   full_emergency: "Full emergency fund",
+  near_goals: "Goals due within 5 years",
   hsa: "Health savings account",
   ira: "IRA",
   max_workplace: "Max out workplace plan",
@@ -36,7 +38,56 @@ export const STEP_TITLES: Record<StepId, string> = {
   low_interest_debt: "Pay down low-interest debt",
 };
 
-export const DEFAULT_STEPS: { id: StepId; enabled: boolean }[] = STEP_IDS.map((id) => ({ id, enabled: id !== "low_interest_debt" }));
+export const DEFAULT_STEPS: { id: StepId; enabled: boolean }[] = STEP_IDS.map((id) => ({ id, enabled: id !== "low_interest_debt" && id !== "near_goals" }));
+
+/** Goals due within this many months count as near-term when that step is on. */
+export const NEAR_GOAL_MONTHS = 60;
+
+/**
+ * Ready-made step orders. "standard" is the default. The others change the
+ * trade-off between money you can reach soon and money locked in retirement accounts.
+ */
+export const STEP_TEMPLATES: Record<"standard" | "liquidity_first" | "max_tax_advantage", { label: string; summary: string; steps: { id: StepId; enabled: boolean }[] }> = {
+  standard: {
+    label: "Standard",
+    summary: "Safety first, then tax-advantaged retirement saving, then goals, then taxable investing.",
+    steps: DEFAULT_STEPS,
+  },
+  liquidity_first: {
+    label: "Liquidity first",
+    summary: "Goals due within 5 years are funded before HSA, IRA and extra workplace saving. The employer match still comes first.",
+    steps: [
+      "starter_emergency",
+      "employer_match",
+      "high_interest_debt",
+      "full_emergency",
+      "near_goals",
+      "hsa",
+      "ira",
+      "max_workplace",
+      "goals",
+      "taxable",
+      "low_interest_debt",
+    ].map((id) => ({ id: id as StepId, enabled: id !== "low_interest_debt" })),
+  },
+  max_tax_advantage: {
+    label: "Max tax advantage",
+    summary: "Fills HSA, IRA and the workplace plan before any goal. Best when goals are far off or flexible.",
+    steps: [
+      "starter_emergency",
+      "employer_match",
+      "high_interest_debt",
+      "hsa",
+      "ira",
+      "max_workplace",
+      "full_emergency",
+      "near_goals",
+      "goals",
+      "taxable",
+      "low_interest_debt",
+    ].map((id) => ({ id: id as StepId, enabled: id !== "low_interest_debt" && id !== "near_goals" })),
+  },
+};
 
 export interface PlanPerson {
   id: number;
@@ -212,7 +263,8 @@ function deadlineFor(r: Recommendation, year: number, input: WaterfallInput): Re
       const d = input.debts.find((x) => x.id === r.subject?.id);
       return d?.promoEnds && d.promoEnds >= input.today ? { date: d.promoEnds, label: "Intro rate ends" } : undefined;
     }
-    case "goals": {
+    case "goals":
+    case "near_goals": {
       const g = input.goals.find((x) => x.id === r.subject?.id);
       return g?.targetDate ? { date: g.targetDate, label: "Goal date" } : undefined;
     }
@@ -523,12 +575,23 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
         return;
       }
 
+      case "near_goals":
       case "goals": {
-        if (input.goals.length === 0) {
-          push(order, s.id, { status: "not_applicable", action: "", amount: 0, why: "No savings goals yet. Add one on the Goals page.", facts: [] });
+        const nearOn = input.steps.some((x) => x.id === "near_goals" && x.enabled);
+        const isNear = (g: PlanGoal) => g.targetDate !== null && monthsBetween(today, g.targetDate) <= NEAR_GOAL_MONTHS;
+        // With the near-term step on, it takes goals due soon and this step keeps the rest.
+        const list = s.id === "near_goals" ? input.goals.filter(isNear) : nearOn ? input.goals.filter((g) => !isNear(g)) : input.goals;
+        if (list.length === 0) {
+          push(order, s.id, {
+            status: "not_applicable",
+            action: "",
+            amount: 0,
+            why: s.id === "near_goals" ? "No goal is due within 5 years." : input.goals.length === 0 ? "No savings goals yet. Add one on the Goals page." : "Every goal is due within 5 years and handled by the step above.",
+            facts: [],
+          });
           return;
         }
-        for (const g of input.goals) {
+        for (const g of list) {
           const subject = { kind: "goal" as const, id: g.id, name: g.name };
           if (g.remaining <= 0) {
             push(order, s.id, { subject, title: `Goal: ${g.name}`, status: "done", action: "", amount: 0, why: "Fully funded.", facts: [] });

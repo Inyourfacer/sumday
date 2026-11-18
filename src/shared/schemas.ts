@@ -331,6 +331,7 @@ export const planSettingsSchema = z.object({
   /** Marginal income-tax rate (%), so pre-tax payroll steps are priced at their take-home cost. null = not set. */
   marginalTaxPct: z.number().min(0).max(60).nullable().optional(),
 });
+export const planPreviewSchema = z.object({ steps: z.array(z.object({ id: z.string(), enabled: z.boolean() })) });
 export const debtQuerySchema = z.object({
   extra: z.coerce.number().int().min(0).max(100_000_000).optional(),
 });

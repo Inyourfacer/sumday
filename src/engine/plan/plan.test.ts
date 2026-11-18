@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { compareStrategies, payoffPlan, type Debt } from "./debt.ts";
 import { emergencyMonthsDefault, goalProgress } from "./goals.ts";
 import { hsaLimit, iraLimit, limitsFor, workplaceLimit, type ContributionLimits } from "./limits.ts";
-import { DEFAULT_STEPS, fullMatchPct, matchValue, runWaterfall, type WaterfallInput } from "./waterfall.ts";
+import { DEFAULT_STEPS, STEP_IDS, STEP_TEMPLATES, fullMatchPct, matchValue, runWaterfall, type WaterfallInput } from "./waterfall.ts";
 
 const load = (y: number) => JSON.parse(readFileSync(new URL(`../../../data/limits/${y}.json`, import.meta.url), "utf8")) as ContributionLimits;
 const L2025 = load(2025);
@@ -202,6 +202,34 @@ describe("waterfall", () => {
     // A partly funded step still lands on a whole percentage.
     const tight = runWaterfall(input({ available: 8_000, params: { ...input().params, marginalTaxPct: 20 } }));
     expect(byStep(tight, "employer_match")[0]).toMatchObject({ status: "partial", amount: 8_000, contribution: 10_000 });
+  });
+
+  it("funds goals due within 5 years first when that step is on, and leaves the default alone", () => {
+    const base = { available: 2_000_000, emergencySaved: 1_500_000, debts: [] as WaterfallInput["debts"], hsaCoverage: "family" as const };
+    const goals = [
+      { id: 5, name: "House", remaining: 2_000_000, requiredMonthly: 100_000, targetDate: "2028-06-30" },
+      { id: 6, name: "Kid's college", remaining: 9_000_000, requiredMonthly: 40_000, targetDate: "2038-09-01" },
+    ];
+    // Default: near_goals is off and the goals step takes every goal in order.
+    const std = runWaterfall(input({ ...base, goals }));
+    expect(byStep(std, "near_goals")[0]!.status).toBe("disabled");
+    expect(byStep(std, "goals").map((x) => x.subject?.name)).toEqual(["House", "Kid's college"]);
+    // Liquidity first: the house moves ahead of HSA and IRA; college stays in the goals step.
+    const liquid = runWaterfall(input({ ...base, goals, steps: STEP_TEMPLATES.liquidity_first.steps }));
+    expect(byStep(liquid, "near_goals").map((x) => x.subject?.name)).toEqual(["House"]);
+    expect(byStep(liquid, "goals").map((x) => x.subject?.name)).toEqual(["Kid's college"]);
+    const order = (step: string) => liquid.recommendations.find((x) => x.step === step)!.order;
+    expect(order("near_goals")).toBeLessThan(order("hsa"));
+    // With little money, the near-term goal gets it and retirement accounts wait.
+    const tight = runWaterfall(input({ ...base, goals, available: 150_000, steps: STEP_TEMPLATES.liquidity_first.steps }));
+    expect(byStep(tight, "near_goals")[0]).toMatchObject({ status: "act", amount: 100_000 });
+    expect(byStep(tight, "ira").every((x) => x.amount === 0 || x.status === "partial")).toBe(true);
+  });
+
+  it("ships templates that list every step once", () => {
+    for (const t of Object.values(STEP_TEMPLATES)) {
+      expect(t.steps.map((s) => s.id).sort()).toEqual([...STEP_IDS].sort());
+    }
   });
 
   it("keys each move and gives it a deadline", () => {

@@ -6,10 +6,11 @@ import { compareStrategies, type Debt } from "../engine/plan/debt.ts";
 import { emergencyMonthsDefault, goalProgress } from "../engine/plan/goals.ts";
 import { limitsFor, type ContributionLimits } from "../engine/plan/limits.ts";
 import { DEFAULT_STEPS, STEP_IDS, runWaterfall, type PlanDebt, type Recommendation, type StepId } from "../engine/plan/waterfall.ts";
-import type { AccountView, DebtsResponse, GoalView, PlanResponse, PlanSettings, PlanAlert } from "../shared/api.ts";
+import type { AccountView, DebtsResponse, GoalView, PlanPreviewResponse, PlanResponse, PlanSettings, PlanAlert } from "../shared/api.ts";
 import {
   debtQuerySchema,
   goalAllocationsSchema,
+  planPreviewSchema,
   goalInputSchema,
   goalPatchSchema,
   goalReorderSchema,
@@ -279,6 +280,46 @@ function portfolioAlerts(db: Db): PlanAlert[] {
   return out;
 }
 
+// ---------- How steady the available amount is ----------
+
+function percentile(sorted: number[], p: number): number {
+  const i = (sorted.length - 1) * p;
+  const lo = Math.floor(i);
+  const hi = Math.ceil(i);
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (i - lo);
+}
+
+/**
+ * The usual swing in monthly Flex spending over up to a year of complete months
+ * (25th to 75th percentile), turned into a range for the available amount.
+ * Needs at least 4 months; with fewer the single estimate stands alone.
+ */
+function availableRange(db: Db, now: IsoDate, expectedIncome: number | null, baseline: Baseline): { low: number; high: number; months: number } | null {
+  if (expectedIncome === null) return null;
+  const row = db.prepare("SELECT MIN(date) AS d FROM transactions WHERE status = 'posted'").get() as { d: string | null };
+  if (row.d === null) return null;
+  const last = nextMonth(monthOf(now), -1);
+  const months = monthRange(monthOf(row.d), last).slice(-12);
+  if (months.length < 4) return null;
+  const flexIds = loadBudgetCategories(db).filter((c) => c.budgetType === "flex").map((c) => c.id);
+  const actuals = loadActuals(db, months[0]!, last);
+  const uncategorized = new Map(
+    (
+      db
+        .prepare(
+          `SELECT substr(date, 1, 7) AS m, COALESCE(SUM(-amount), 0) AS t FROM transactions
+           WHERE status = 'posted' AND category_id IS NULL AND amount < 0 AND date >= ? AND date < ? GROUP BY m`,
+        )
+        .all(firstDay(months[0]!), firstDay(nextMonth(last))) as { m: string; t: number }[]
+    ).map((x) => [x.m, x.t]),
+  );
+  const flex = months
+    .map((m) => flexIds.reduce((s, id) => s - (actuals.get(id)?.get(m) ?? 0), 0) + (uncategorized.get(m) ?? 0))
+    .sort((a, b) => a - b);
+  const fixedPart = expectedIncome - baseline.fixed - baseline.nonMonthly;
+  return { low: Math.round(fixedPart - percentile(flex, 0.75)), high: Math.round(fixedPart - percentile(flex, 0.25)), months: months.length };
+}
+
 // ---------- Contributions and current flows ----------
 
 const RETIREMENT_TYPES = "'ira', 'roth_ira', '401k', '403b'";
@@ -331,16 +372,25 @@ function annotateAlreadyMoving(db: Db, now: IsoDate, people: ReturnType<typeof g
   }
 }
 
+/** Every step exactly once. */
+function checkSteps(steps: { id: string; enabled: boolean }[]): PlanSettings["steps"] {
+  const ids = steps.map((s) => s.id);
+  if (ids.length !== STEP_IDS.length || new Set(ids).size !== ids.length || !ids.every((id) => (STEP_IDS as readonly string[]).includes(id))) {
+    throw badRequest("Send every step exactly once, in the new order.");
+  }
+  return steps as PlanSettings["steps"];
+}
+
 // ---------- The plan ----------
 
 function yearStart(now: IsoDate): IsoDate {
   return `${now.slice(0, 4)}-01-01`;
 }
 
-export function buildPlan(db: Db): PlanResponse {
+export function buildPlan(db: Db, options: { steps?: PlanSettings["steps"] } = {}): PlanResponse {
   const ctx = buildContext(db);
   const { now, accounts, baseline } = ctx;
-  const settings = getPlanSettings(db);
+  const settings = { ...getPlanSettings(db), ...(options.steps ? { steps: options.steps } : {}) };
   const household = getHousehold(db);
   const people = getPeople(db);
   const budget = getBudgetSettings(db);
@@ -424,6 +474,7 @@ export function buildPlan(db: Db): PlanResponse {
       computed,
       override: settings.availableOverride,
       averagedMonths: baseline.months,
+      range: settings.availableOverride === null ? availableRange(db, now, budget.expectedIncome, baseline) : null,
       essentialMonthly: baseline.essential,
       emergencyTarget: ctx.emergencyTarget,
       emergencySaved: ctx.emergencySaved,
@@ -537,17 +588,28 @@ export function registerPlanRoutes(app: FastifyInstance, db: Db): void {
   app.get("/api/plan", async () => buildPlan(db));
   registerMoveRoutes(app, db, buildPlan);
 
+  /** What each move would become under a different step order, without saving anything. */
+  app.post("/api/plan/preview", async (request) => {
+    const { steps } = parse(planPreviewSchema, request.body);
+    const checked = checkSteps(steps);
+    const now = buildPlan(db);
+    const then = buildPlan(db, { steps: checked });
+    const amounts = (p: PlanResponse) => new Map(p.result.recommendations.filter((r) => r.amount > 0).map((r) => [r.key, r]));
+    const a = amounts(now);
+    const b = amounts(then);
+    const keys = [...new Set([...a.keys(), ...b.keys()])];
+    const changes = keys
+      .map((key) => ({ key, title: (b.get(key) ?? a.get(key))!.title, before: a.get(key)?.amount ?? 0, after: b.get(key)?.amount ?? 0 }))
+      .filter((c) => c.before !== c.after)
+      .sort((x, y) => Math.abs(y.after - y.before) - Math.abs(x.after - x.before));
+    return { changes } satisfies PlanPreviewResponse;
+  });
+
   app.put("/api/plan/settings", async (request) => {
     const patch = parse(planSettingsSchema, request.body);
     const current = getPlanSettings(db);
     let steps = current.steps;
-    if (patch.steps) {
-      const ids = patch.steps.map((s) => s.id);
-      if (ids.length !== STEP_IDS.length || new Set(ids).size !== ids.length || !ids.every((id) => (STEP_IDS as readonly string[]).includes(id))) {
-        throw badRequest("Send every step exactly once, in the new order.");
-      }
-      steps = patch.steps as PlanSettings["steps"];
-    }
+    if (patch.steps) steps = checkSteps(patch.steps);
     setSetting(db, "plan", {
       steps,
       starterAmount: patch.starterAmount ?? current.starterAmount,

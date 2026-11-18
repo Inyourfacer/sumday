@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { MoveImpactsResponse, PlanResponse, Recommendation, RetirementResponse } from "../../shared/api.ts";
-import { STEP_TITLES } from "../../engine/plan/waterfall.ts";
+import type { MoveImpactsResponse, PlanPreviewResponse, PlanResponse, Recommendation, RetirementResponse } from "../../shared/api.ts";
+import { STEP_TEMPLATES, STEP_TITLES } from "../../engine/plan/waterfall.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { monthTitle } from "../chartMath.ts";
 import { ErrorNote, Field, Loading, MoneyInput, NumberInput, PageHeader } from "../components/ui.tsx";
@@ -161,6 +161,12 @@ export function PlanPage() {
           <div>
             <span className="field-label">Available to put to work this month</span>
             <div className="hero">{formatMoney(result.available, { cents: false })}</div>
+            {basis.range && (
+              <p className="muted small">
+                Usually between {formatMoney(Math.max(0, basis.range.low), { cents: false })} and {formatMoney(Math.max(0, basis.range.high), { cents: false })} a month
+                (the typical swing in Flex spending over {basis.range.months} months). Commit automatic transfers at the low end and sweep the rest when it shows up.
+              </p>
+            )}
           </div>
           <details className="facts">
             <summary>{basis.override !== null ? "Set by hand" : "How this is worked out"}</summary>
@@ -190,6 +196,14 @@ export function PlanPage() {
                 <dt>= Available</dt>
                 <dd>{basis.computed === null ? "—" : formatMoney(basis.computed, { cents: false })}</dd>
               </div>
+              {basis.range && (
+                <div>
+                  <dt>Usual range ({basis.range.months} months of Flex spending)</dt>
+                  <dd>
+                    {formatMoney(basis.range.low, { cents: false })} to {formatMoney(basis.range.high, { cents: false })}
+                  </dd>
+                </div>
+              )}
             </dl>
             <p className="muted small">
               Fixed and non-monthly use your budgets where set, otherwise recent averages. Debt minimums are assumed to be in your
@@ -298,6 +312,22 @@ function PlanSettingsPanel({
   const [override, setOverride] = useState<number | null>(s.availableOverride);
   const [taxPct, setTaxPct] = useState<number | null>(s.marginalTaxPct);
 
+  // Previewing a template shows what changes before anything is saved.
+  const [preview, setPreview] = useState<{ template: keyof typeof STEP_TEMPLATES; changes: PlanPreviewResponse["changes"] }>();
+  const [previewError, setPreviewError] = useState<string>();
+  const currentTemplate = (Object.keys(STEP_TEMPLATES) as (keyof typeof STEP_TEMPLATES)[]).find(
+    (k) => JSON.stringify(STEP_TEMPLATES[k].steps) === JSON.stringify(steps),
+  );
+  const showPreview = async (template: keyof typeof STEP_TEMPLATES) => {
+    try {
+      const res = await api<PlanPreviewResponse>("POST", "/api/plan/preview", { steps: STEP_TEMPLATES[template].steps });
+      setPreview({ template, changes: res.changes });
+      setPreviewError(undefined);
+    } catch (err) {
+      setPreviewError(errorMessage(err));
+    }
+  };
+
   const move = (i: number, delta: -1 | 1) => {
     const next = [...steps];
     const [item] = next.splice(i, 1);
@@ -309,6 +339,55 @@ function PlanSettingsPanel({
     <details className="panel tight" open={open} onToggle={(e) => onToggle(e.currentTarget.open)}>
       <summary>Plan settings</summary>
       <p className="muted small">Change the order, turn steps off, or adjust the thresholds. Every change recalculates the plan.</p>
+      <div className="templates">
+        <span className="field-label">Start from a template</span>
+        <ul>
+          {(Object.keys(STEP_TEMPLATES) as (keyof typeof STEP_TEMPLATES)[]).map((k) => (
+            <li key={k}>
+              <strong>{STEP_TEMPLATES[k].label}</strong>
+              {currentTemplate === k && <span className="chip-status done"> In use</span>}
+              <span className="muted small"> {STEP_TEMPLATES[k].summary}</span>{" "}
+              {currentTemplate !== k && (
+                <button type="button" className="link small" onClick={() => void showPreview(k)}>
+                  See what changes
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+        <ErrorNote message={previewError} />
+        {preview && (
+          <div className="panel tight">
+            <strong>{STEP_TEMPLATES[preview.template].label}: what changes this month</strong>
+            {preview.changes.length === 0 ? (
+              <p className="muted small">Nothing changes this month with your current numbers.</p>
+            ) : (
+              <ul className="mini-list">
+                {preview.changes.map((c) => (
+                  <li key={c.key}>
+                    <span>{c.title}</span>
+                    <span>
+                      {formatMoney(c.before, { cents: false })} → {formatMoney(c.after, { cents: false })}/mo
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                saveSteps(STEP_TEMPLATES[preview.template].steps);
+                setPreview(undefined);
+              }}
+            >
+              Use this order
+            </button>{" "}
+            <button type="button" className="link" onClick={() => setPreview(undefined)}>
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
       <ol className="step-order">
         {steps.map((step, i) => (
           <li key={step.id}>
