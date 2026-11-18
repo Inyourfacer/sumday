@@ -212,6 +212,7 @@ function RebalancePanel({ data }: { data: InvestmentsResponse }) {
                       ? `≈ ${formatMoney(-s.estimatedGain, { cents: false })} loss (can offset other gains)`
                       : `≈ ${formatMoney(s.estimatedGain, { cents: false })} gain`}
                 </span>
+                {s.washSaleWarning && <p className="small note-warn">{s.washSaleWarning}</p>}
               </li>
             ))}
             {taxable.map((t) => (
@@ -538,6 +539,7 @@ export function InvestmentsPage() {
               {d.fees.expensive.map((e) => (
                 <p key={e.holdingId} className="small">
                   <span className="status over">{e.label}</span> costs {e.expenseRatio}% a year in {e.accountName}.
+                  {e.cheaperHeld && ` You already hold ${e.cheaperHeld.label} at ${e.cheaperHeld.expenseRatio}% in the same asset class.`}
                 </p>
               ))}
               {d.locationHints.map((h) => (

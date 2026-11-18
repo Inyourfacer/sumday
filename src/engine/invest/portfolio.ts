@@ -139,6 +139,11 @@ export interface TaxableSale {
   amount: Cents;
   /** Estimated capital gain (negative = loss); null without a cost basis. */
   estimatedGain: Cents | null;
+  /**
+   * Set when selling at a loss and the same fund is also held in another account
+   * (buying it within 30 days either side of the sale would disallow the loss).
+   */
+  washSaleWarning?: string;
 }
 
 export interface RebalancePlan {
@@ -198,6 +203,7 @@ export function rebalance(positions: readonly Position[], target: Target): Rebal
         amount,
         // Cash has no gain to tax.
         estimatedGain: sell === "cash" ? 0 : p.costBasis === null ? null : multiplyCents(amount, gainRatio(p)),
+        ...washSale(p, amount, positions),
       });
       // Spread the proceeds over the underweight classes in order.
       let left = amount;
@@ -218,6 +224,16 @@ export function rebalance(positions: readonly Position[], target: Target): Rebal
     trades: mergeTrades(trades),
     taxableSales,
     remaining: ASSET_CLASSES.map((c) => ({ assetClass: c, amount: delta.get(c)! })).filter((x) => Math.abs(x.amount) >= 100),
+  };
+}
+
+/** A loss on a fund you also hold elsewhere can be disallowed if that account buys more within 30 days. */
+function washSale(p: Position, amount: Cents, all: readonly Position[]): { washSaleWarning: string } | Record<string, never> {
+  if (p.costBasis === null || p.value <= 0 || multiplyCents(amount, (p.value - p.costBasis) / p.value) >= 0) return {};
+  const other = all.find((q) => q.holdingId !== p.holdingId && q.label === p.label && q.value > 0);
+  if (!other) return {};
+  return {
+    washSaleWarning: `You also hold ${p.label} in ${other.accountName}. Don't buy it there (or reinvest dividends) within 30 days of this sale, or the loss can be disallowed.`,
   };
 }
 
@@ -280,8 +296,20 @@ export interface FeeSummary {
   drag10: Cents;
   drag30: Cents;
   /** Holdings costing more than 0.5% a year. */
-  expensive: { holdingId: number; label: string; accountName: string; expenseRatio: number; value: Cents }[];
+  /** Holdings that cost a lot, or that cost clearly more than a fund you already hold in the same asset class. */
+  expensive: {
+    holdingId: number;
+    label: string;
+    accountName: string;
+    expenseRatio: number;
+    value: Cents;
+    /** A cheaper fund of the same asset class you already hold. */
+    cheaperHeld?: { label: string; expenseRatio: number };
+  }[];
 }
+
+/** A fund is flagged against a cheaper held fund when it costs over this much and at least double. */
+const RELATIVE_FEE_FLOOR = 0.2;
 
 export const FEE_GROWTH = 0.06;
 
@@ -301,7 +329,26 @@ export function fees(positions: readonly Position[]): FeeSummary {
     drag10: drag(10),
     drag30: drag(30),
     expensive: known
-      .filter((p) => p.expenseRatio! > 0.5)
-      .map((p) => ({ holdingId: p.holdingId, label: p.label, accountName: p.accountName, expenseRatio: p.expenseRatio!, value: p.value })),
+      .map((p) => {
+        const cls = dominantClass(p.mix);
+        // The cheapest other fund of the same class that costs under half as much.
+        const cheaper = cls
+          ? known
+              .filter((q) => q.holdingId !== p.holdingId && dominantClass(q.mix) === cls && q.expenseRatio! * 2 <= p.expenseRatio!)
+              .sort((a, b) => a.expenseRatio! - b.expenseRatio!)[0]
+          : undefined;
+        const flagged = p.expenseRatio! > 0.5 || (cheaper !== undefined && p.expenseRatio! > RELATIVE_FEE_FLOOR);
+        return flagged
+          ? {
+              holdingId: p.holdingId,
+              label: p.label,
+              accountName: p.accountName,
+              expenseRatio: p.expenseRatio!,
+              value: p.value,
+              ...(cheaper ? { cheaperHeld: { label: cheaper.label, expenseRatio: cheaper.expenseRatio! } } : {}),
+            }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null),
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { compareStrategies, payoffPlan, type Debt } from "./debt.ts";
+import { compareStrategies, effectiveApr, payoffPlan, type Debt } from "./debt.ts";
 import { emergencyMonthsDefault, goalProgress } from "./goals.ts";
 import { hsaLimit, iraLimit, limitsFor, workplaceLimit, type ContributionLimits } from "./limits.ts";
 import { DEFAULT_STEPS, STEP_IDS, STEP_TEMPLATES, fullMatchPct, matchValue, runWaterfall, type WaterfallInput } from "./waterfall.ts";
@@ -241,6 +241,33 @@ describe("waterfall", () => {
     expect(byStep(r, "max_workplace")[0]!.deadline?.date).toBe("2026-12-31");
     expect(byStep(r, "goals")[0]!.deadline).toEqual({ date: "2028-06-30", label: "Goal date" });
     expect(byStep(r, "taxable")[0]!.deadline).toBeUndefined();
+  });
+
+  it("ranks debts by what they cost over the next year, counting an intro rate that is about to end", () => {
+    // 0% for two more months, then 25%: nearly its full rate over the next year.
+    const ending = { apr: 25, promoApr: 0, promoEnds: "2027-01-08" };
+    expect(effectiveApr(ending, "2026-11-08")).toBeCloseTo(25 * (1 - 61 / 365), 5);
+    // 0% for a year or more: close to free.
+    expect(effectiveApr({ apr: 25, promoApr: 0, promoEnds: "2028-01-01" }, "2026-11-08")).toBe(0);
+    expect(effectiveApr({ apr: 25 }, "2026-11-08")).toBe(25);
+    expect(effectiveApr({ apr: 25, promoApr: 0, promoEnds: "2026-10-01" }, "2026-11-08")).toBe(25);
+
+    const debts = [
+      { id: 20, name: "Steady card", balance: 100_000, apr: 22, minPayment: 3_000, paysInFull: false },
+      { id: 21, name: "Intro card", balance: 100_000, apr: 25, minPayment: 3_000, paysInFull: false, promoApr: 0, promoEnds: "2028-01-01" },
+    ];
+    const r = runWaterfall(input({ available: 5_000, debts }));
+    const order = byStep(r, "high_interest_debt").map((x) => x.subject?.name);
+    // The steady 22% card comes first even though the intro card's standard rate is higher; the intro card is not high-interest yet.
+    expect(order).toEqual(["Steady card"]);
+    expect(byStep(runWaterfall(input({ available: 5_000, debts: [debts[1]!], })), "high_interest_debt")[0]!.status).toBe("done");
+  });
+
+  it("says when a minimum payment is only a guess", () => {
+    const r = runWaterfall(input({ available: 300_000, debts: [{ id: 30, name: "Card", balance: 50_000, apr: 20, minPayment: 2_500, paysInFull: false, minimumEstimated: true }] }));
+    const fact = byStep(r, "high_interest_debt")[0]!.facts.find((f) => f.label === "Minimum payment")!;
+    expect(fact.kind).toBe("text");
+    expect(String(fact.value)).toContain("a guess");
   });
 
   it("respects order and disabled steps", () => {

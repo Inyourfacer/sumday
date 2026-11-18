@@ -6,7 +6,7 @@
  */
 import { monthsBetween, parseIsoDate, type IsoDate } from "../dates.ts";
 import { multiplyCents, type Cents } from "../money.ts";
-import { payoffPlan, type Debt } from "./debt.ts";
+import { effectiveApr, payoffPlan, type Debt } from "./debt.ts";
 import { hsaLimit, iraLimit, workplaceLimit, type ContributionLimits, type FilingStatus } from "./limits.ts";
 
 export const STEP_IDS = [
@@ -109,6 +109,8 @@ export interface PlanPerson {
 export interface PlanDebt extends Debt {
   /** Paid in full every month (a card used for convenience): not debt to pay down. */
   paysInFull: boolean;
+  /** The minimum payment is a guess (2% of the balance), not what the lender requires. */
+  minimumEstimated?: boolean;
 }
 
 export interface PlanGoal {
@@ -400,9 +402,11 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
       case "high_interest_debt":
       case "low_interest_debt": {
         const high = s.id === "high_interest_debt";
+        // Rank by what the debt costs over the next year: an intro rate that is about to end counts at nearly its full rate.
+        const rate = (d: PlanDebt) => effectiveApr(d, today);
         const debts = input.debts
-          .filter((d) => !d.paysInFull && d.balance > 0 && (high ? d.apr >= params.highInterestApr : d.apr < params.highInterestApr))
-          .sort((a, b) => b.apr - a.apr || a.balance - b.balance);
+          .filter((d) => !d.paysInFull && d.balance > 0 && (high ? rate(d) >= params.highInterestApr : rate(d) < params.highInterestApr))
+          .sort((a, b) => rate(b) - rate(a) || a.balance - b.balance);
         if (debts.length === 0) {
           push(order, s.id, {
             status: "done",
@@ -430,16 +434,19 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             status: extra > 0 ? "act" : "waiting",
             action:
               extra > 0
-                ? `Pay ${usd(extra)}/mo on top of the minimum on ${d.name} (${pct(d.apr)} APR).`
-                : `${d.name} (${pct(d.apr)} APR) is next once the debts above it are paid.`,
+                ? `Pay ${usd(extra)}/mo on top of the minimum on ${d.name} (${pct(rate(d))} APR).`
+                : `${d.name} (${pct(rate(d))} APR) is next once the debts above it are paid.`,
             amount: extra,
             why: high
-              ? `Paying off a ${pct(d.apr)} debt is a guaranteed ${pct(d.apr)} return. Highest rate first (avalanche) costs the least interest.`
+              ? `Paying off a ${pct(rate(d))} debt is a guaranteed ${pct(rate(d))} return. Highest rate first (avalanche) costs the least interest.`
               : "Optional: low-rate debt costs less than investing usually earns, but being debt-free has its own value.",
             facts: [
               money("Balance", d.balance),
               percent("APR", d.apr),
-              money("Minimum payment", d.minPayment),
+              ...(rate(d) !== d.apr ? [percent("Rate over the next year (intro rate counted)", Math.round(rate(d) * 100) / 100)] : []),
+              d.minimumEstimated
+                ? text("Minimum payment", `${usd(d.minPayment)}, a guess (2% of the balance). Enter the real minimum on the account.`)
+                : money("Minimum payment", d.minPayment),
               ...(withExtra.months !== null ? [months("Paid off in", withExtra.months)] : []),
               ...(minimumOnly.months !== null
                 ? [months("Minimums only", minimumOnly.months), money("Interest saved", minimumOnly.totalInterest - withExtra.totalInterest)]

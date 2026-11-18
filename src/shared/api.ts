@@ -138,7 +138,7 @@ export interface InvestmentsResponse {
   rebalance: {
     needed: boolean;
     trades: { where: "tax_advantaged" | "taxable"; sell: AssetClassId; buy: AssetClassId; amount: number }[];
-    taxableSales: { holdingId: number; label: string; accountName: string; amount: number; estimatedGain: number | null }[];
+    taxableSales: { holdingId: number; label: string; accountName: string; amount: number; estimatedGain: number | null; washSaleWarning?: string }[];
     remaining: { assetClass: AssetClassId; amount: number }[];
   };
   locationHints: { kind: string; amount: number; message: string }[];
@@ -149,7 +149,7 @@ export interface InvestmentsResponse {
     yearly: number;
     drag10: number;
     drag30: number;
-    expensive: { holdingId: number; label: string; accountName: string; expenseRatio: number; value: number }[];
+    expensive: { holdingId: number; label: string; accountName: string; expenseRatio: number; value: number; cheaperHeld?: { label: string; expenseRatio: number } }[];
   };
   prices: { provider: string; configured: boolean; latest: string | null; errors: { label: string; message: string }[] };
 }

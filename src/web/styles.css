@@ -2362,3 +2362,5 @@ table.compare .badge {
 .step-order li .drag-handle { flex: none; }
 .step-order li > .check { flex: 1; }
 .step-order li > span:last-child { flex: none; }
+
+.note-warn { color: var(--danger); margin: 0.2rem 0 0; }

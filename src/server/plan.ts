@@ -270,7 +270,9 @@ function portfolioAlerts(db: Db): PlanAlert[] {
     out.push({
       kind: "fees",
       title: `${e.label} costs ${e.expenseRatio}% a year`,
-      message: `In ${e.accountName}. Broad index funds in the same asset class often cost under 0.1%. Check what your plan or brokerage offers.`,
+      message: e.cheaperHeld
+        ? `In ${e.accountName}. You already hold ${e.cheaperHeld.label} (${e.cheaperHeld.expenseRatio}%) in the same asset class. Moving new money there costs less.`
+        : `In ${e.accountName}. Broad index funds in the same asset class often cost under 0.1%. Check what your plan or brokerage offers.`,
       facts: [
         { label: "Value", value: e.value, kind: "money" },
         { label: "Yearly cost", value: Math.round((e.value * e.expenseRatio) / 100), kind: "money" },
