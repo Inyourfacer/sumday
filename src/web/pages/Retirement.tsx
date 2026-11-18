@@ -180,6 +180,7 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
   const [ord, setOrd] = useState<number | null>(s.ordinaryTaxPct);
   const [hair, setHair] = useState<number | null>(s.returnHaircutPct);
   const [cg, setCg] = useState<number | null>(s.capitalGainsPct);
+  const [state, setState] = useState<number | null>(s.stateTaxPct);
   const [error, setError] = useState<string>();
   const save = async (patch: Record<string, unknown>) => {
     try {
@@ -200,15 +201,37 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             <NumberInput value={target} min={50} max={99} suffix="%" ariaLabel="Success target" onChange={setTarget} />
           </span>
         </Field>
-        <Field label="Tax on pre-tax withdrawals" hint="Your expected average rate in retirement">
-          <span onBlur={() => ord !== null && ord !== s.ordinaryTaxPct && void save({ ordinaryTaxPct: ord })}>
-            <NumberInput value={ord} min={0} max={60} suffix="%" ariaLabel="Tax on pre-tax withdrawals" onChange={setOrd} />
-          </span>
+        <Field label="How taxes are worked out" hint="Brackets use the federal tax code for your filing status. A flat rate is a simple average.">
+          <select value={s.taxMode} onChange={(e) => void save({ taxMode: e.target.value })} aria-label="How taxes are worked out">
+            <option value="brackets">Federal brackets (recommended)</option>
+            <option value="flat">Flat rates</option>
+          </select>
         </Field>
-        <Field label="Tax on investment gains">
-          <span onBlur={() => cg !== null && cg !== s.capitalGainsPct && void save({ capitalGainsPct: cg })}>
-            <NumberInput value={cg} min={0} max={40} suffix="%" ariaLabel="Tax on investment gains" onChange={setCg} />
-          </span>
+        {s.taxMode === "brackets" ? (
+          <Field label="State income tax" hint="A flat rate on withdrawals and gains. Leave at 0 if your state doesn't tax them.">
+            <span onBlur={() => state !== null && state !== s.stateTaxPct && void save({ stateTaxPct: state })}>
+              <NumberInput value={state} min={0} max={15} step={0.5} suffix="%" ariaLabel="State income tax" onChange={setState} />
+            </span>
+          </Field>
+        ) : (
+          <>
+            <Field label="Tax on pre-tax withdrawals" hint="Your expected average rate in retirement">
+              <span onBlur={() => ord !== null && ord !== s.ordinaryTaxPct && void save({ ordinaryTaxPct: ord })}>
+                <NumberInput value={ord} min={0} max={60} suffix="%" ariaLabel="Tax on pre-tax withdrawals" onChange={setOrd} />
+              </span>
+            </Field>
+            <Field label="Tax on investment gains">
+              <span onBlur={() => cg !== null && cg !== s.capitalGainsPct && void save({ capitalGainsPct: cg })}>
+                <NumberInput value={cg} min={0} max={40} suffix="%" ariaLabel="Tax on investment gains" onChange={setCg} />
+              </span>
+            </Field>
+          </>
+        )}
+        <Field label="Investment mix" hint="Target: your aim, rebalanced every year. What I hold: today's mix, left to drift.">
+          <select value={s.allocationSource} onChange={(e) => void save({ allocationSource: e.target.value })} aria-label="Investment mix used">
+            <option value="target">My target mix</option>
+            <option value="actual">What I hold today</option>
+          </select>
         </Field>
         <Field label="Returns stress" hint="Take this many points off every stock and bond return, every year, to plan for a worse future than history">
           <span onBlur={() => hair !== null && hair !== s.returnHaircutPct && void save({ returnHaircutPct: hair })}>
@@ -239,7 +262,12 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
         <li>
           Market data: {data.sources.returns} ({data.sources.returnsYears}). Required minimums: {data.sources.rmd}
         </li>
-        <li>Not included yet: tax brackets, Roth conversions, Medicare surcharges, spousal Social Security benefits.</li>
+        <li>
+          {s.taxMode === "brackets"
+            ? `Taxes follow the federal brackets, standard deduction, 0/15/20% gains rates and partial taxation of Social Security (${data.sources.tax}).`
+            : "Taxes use the two flat rates above."}
+        </li>
+        <li>Not included yet: Roth conversions, the extra deduction at 65+, Medicare surcharges, tax drag while saving, spousal Social Security benefits.</li>
       </ul>
     </details>
   );

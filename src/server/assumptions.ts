@@ -95,7 +95,10 @@ export function assumptions(db: Db): AssumptionsResponse {
       .map(([k, v]) => `${Math.round((v ?? 0) * 100)}% ${k.replace("_", " ")}`)
       .join(", "),
     source: isDefault ? "default" : "you",
-    note: "One mix for the whole household at every age. Retirement projections use this, not what you hold today.",
+    note:
+      retirement.allocationSource === "actual"
+        ? "One mix for the whole household at every age. The retirement projection is using what you hold today instead."
+        : "One mix for the whole household at every age. The retirement projection uses this, not what you hold today (you can switch that on the Retirement page).",
     link: "/investments",
   });
   const positions = toPositions(loadHoldings(db));
@@ -112,8 +115,19 @@ export function assumptions(db: Db): AssumptionsResponse {
 
   // Retirement
   add({ area: "Retirement", label: "Chance of success to aim for", value: `${Math.round(retirement.successTarget * 100)}%`, source: set(storedRet, "successTarget"), link: "/retirement" });
-  add({ area: "Retirement", label: "Tax on pre-tax withdrawals", value: `${retirement.ordinaryTaxPct}% flat`, source: set(storedRet, "ordinaryTaxPct"), note: "No brackets, no Social Security taxation, no state tax.", link: "/retirement" });
-  add({ area: "Retirement", label: "Tax on investment gains", value: `${retirement.capitalGainsPct}% flat`, source: set(storedRet, "capitalGainsPct"), link: "/retirement" });
+  if (retirement.taxMode === "brackets") {
+    add({
+      area: "Retirement",
+      label: "Taxes in retirement",
+      value: `Federal brackets for ${household.filingStatus.replace("_", " ")}, state ${retirement.stateTaxPct}%`,
+      source: set(storedRet, "taxMode"),
+      note: "Tax tables are for 2026 and treated as indexed to inflation. No extra deduction at 65+, no Medicare surcharges, no tax on dividends while saving. State tax is one flat rate you set.",
+      link: "/retirement",
+    });
+  } else {
+    add({ area: "Retirement", label: "Tax on pre-tax withdrawals", value: `${retirement.ordinaryTaxPct}% flat`, source: set(storedRet, "ordinaryTaxPct"), note: "A flat rate over-taxes modest spending and under-taxes big spending. Switch to brackets for a closer answer.", link: "/retirement" });
+    add({ area: "Retirement", label: "Tax on investment gains", value: `${retirement.capitalGainsPct}% flat`, source: set(storedRet, "capitalGainsPct"), link: "/retirement" });
+  }
   add({
     area: "Retirement",
     label: "Returns",
@@ -155,7 +169,9 @@ export function assumptions(db: Db): AssumptionsResponse {
       { label: "Spend 10% more in retirement", input: dial({ spendingPct: 110 }) },
       { label: "Save $500 a month more", input: dial({ extraMonthly: 50_000 }) },
       { label: "Returns 1 point a year lower", input: { ...dial({}), returnHaircutPct: (built.input.returnHaircutPct ?? 0) + 1 } },
-      { label: "Tax on pre-tax withdrawals 5 points higher", input: { ...dial({}), taxes: { ...built.input.taxes, ordinaryPct: built.input.taxes.ordinaryPct + 5 } } },
+      built.input.taxes.brackets
+        ? { label: "State income tax 3 points higher", input: { ...dial({}), taxes: { ...built.input.taxes, brackets: { ...built.input.taxes.brackets, statePct: built.input.taxes.brackets.statePct + 3 } } } }
+        : { label: "Tax on pre-tax withdrawals 5 points higher", input: { ...dial({}), taxes: { ...built.input.taxes, ordinaryPct: built.input.taxes.ordinaryPct + 5 } } },
     ];
     sensitivity = variants
       .map((v) => ({ label: v.label, successPoints: Math.round((rate(v.input) - base) * 1000) / 10 }))

@@ -149,7 +149,8 @@ describe("retirement", () => {
     expect(row("Expected monthly income").source).toBe("missing");
     expect(row("Starter emergency fund").source).toBe("default");
     expect(row("Alex: retirement age").source).toBe("you");
-    expect(row("Tax on pre-tax withdrawals").note).toMatch(/No brackets/);
+    expect(row("Taxes in retirement").note).toMatch(/2026/);
+    expect(row("Taxes in retirement").value).toContain("married joint");
     expect(a.sensitivity.length).toBe(7);
     const byLabel = new Map(a.sensitivity.map((s) => [s.label, s.successPoints]));
     expect(byLabel.get("Retire 2 years later")!).toBeGreaterThanOrEqual(0);
@@ -161,6 +162,44 @@ describe("retirement", () => {
     // Entering a setting changes its source.
     await ok("PUT", "/api/plan/settings", { starterAmount: 300_000 });
     expect((await ok<AssumptionsResponse>("GET", "/api/assumptions")).rows.find((r) => r.label === "Starter emergency fund")!.source).toBe("you");
+  });
+
+  it("taxes retirement withdrawals from the brackets by default, or at flat rates on request", async () => {
+    await household();
+    const brackets = await ok<RetirementResponse>("GET", "/api/retirement");
+    expect(brackets.settings).toMatchObject({ taxMode: "brackets", stateTaxPct: 0 });
+    expect(brackets.sources.tax).toMatch(/Rev\. Proc\./);
+    // A state tax can only lower the answer.
+    const withState = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { stateTaxPct: 6 });
+    expect(withState.result!.successRate).toBeLessThanOrEqual(brackets.result!.successRate);
+    expect(withState.result!.medianAtEnd).toBeLessThanOrEqual(brackets.result!.medianAtEnd);
+    const flat = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { taxMode: "flat" });
+    expect(flat.settings.taxMode).toBe("flat");
+    const a = await ok<AssumptionsResponse>("GET", "/api/assumptions");
+    expect(a.rows.some((r) => r.label === "Tax on pre-tax withdrawals")).toBe(true);
+    expect(a.sensitivity.some((x) => x.label.startsWith("Tax on pre-tax withdrawals"))).toBe(true);
+    expect((await call("PUT", "/api/retirement/settings", { taxMode: "guess" })).status).toBe(400);
+  });
+
+  it("can model the mix you hold today instead of the target", async () => {
+    await household();
+    const target = await ok<RetirementResponse>("GET", "/api/retirement");
+    expect(target.settings.allocationSource).toBe("target");
+    // With no holdings recorded, "what I hold" falls back to the target.
+    const same = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { allocationSource: "actual" });
+    expect(same.inputs!.allocation).toEqual(target.inputs!.allocation);
+    const brokerage = (await ok<AccountView[]>("GET", "/api/accounts")).find((a) => a.name === "Brokerage")!;
+    const positions = `Symbol,Description,Quantity,Last Price,Current Value,Cost Basis Total
+VTI,VANGUARD TOTAL STOCK MKT ETF,100,$370.00,"$37,000.00","$30,000.00"
+BND,VANGUARD TOTAL BOND MARKET ETF,800,$78.75,"$63,000.00","$60,000.00"
+`;
+    await ok("POST", "/api/holdings/import", { accountId: brokerage.id, fileName: "positions.csv", content: positions });
+    const held = await ok<RetirementResponse>("GET", "/api/retirement");
+    expect(held.inputs!.allocation.stocks).toBeCloseTo(0.37, 2);
+    expect(held.inputs!.allocation.bonds).toBeCloseTo(0.63, 2);
+    // A bond-heavy mix is a different risk; back to the target it returns to the 90/10 plan.
+    const back = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { allocationSource: "target" });
+    expect(back.inputs!.allocation).toEqual(target.inputs!.allocation);
   });
 
   it("compares Social Security claim ages", async () => {

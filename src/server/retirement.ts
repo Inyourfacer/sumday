@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { parseIsoDate } from "../engine/dates.ts";
-import { fees } from "../engine/invest/portfolio.ts";
+import { allocation as portfolioAllocation, fees } from "../engine/invest/portfolio.ts";
 import { historicalReplay, simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
+import type { TaxTable } from "../engine/retire/tax.ts";
 import { benefitAtClaim, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
 import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
@@ -21,16 +22,23 @@ const RETURNS = JSON.parse(readFileSync(new URL("../../data/returns/us-annual.js
   source: string;
   years: HistoricalYear[];
 };
+const TAX = JSON.parse(readFileSync(new URL("../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
 const RMD = JSON.parse(readFileSync(new URL("../../data/rmd/uniform-lifetime.json", import.meta.url), "utf8")) as RmdTable & { source: string };
 
 interface StoredSettings {
   successTarget: number;
+  /** brackets = the tax code (deduction, brackets, gains, Social Security); flat = the two rates below. */
+  taxMode: "brackets" | "flat";
+  /** Flat state income tax in the bracket model, percent. */
+  stateTaxPct: number;
   ordinaryTaxPct: number;
   capitalGainsPct: number;
   runs: number;
   blockLength: number;
   /** Percentage points taken off stock and bond returns, to test a worse future than history. */
   returnHaircutPct: number;
+  /** target = the mix you aim for, rebalanced yearly; actual = the mix of what you hold today, kept as is. */
+  allocationSource: "target" | "actual";
   includePlanSavings: boolean;
   spending: { categoryOverrides: Record<string, number | null>; items: SpendingPlan["items"]; oneOffs: SpendingPlan["oneOffs"] };
   /** Changes promoted from scenarios (extra savings, spending changes, one-time amounts, a home). */
@@ -39,11 +47,14 @@ interface StoredSettings {
 
 const DEFAULTS: StoredSettings = {
   successTarget: 0.85,
+  taxMode: "brackets",
+  stateTaxPct: 0,
   ordinaryTaxPct: 15,
   capitalGainsPct: 15,
   runs: 10_000,
   blockLength: 5,
   returnHaircutPct: 0,
+  allocationSource: "target",
   includePlanSavings: true,
   spending: { categoryOverrides: {}, items: [], oneOffs: [] },
   events: [],
@@ -158,7 +169,15 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
   const { target } = getTarget(db);
   const stocks = (target.us_stock ?? 0) + (target.intl_stock ?? 0) + (target.real_estate ?? 0) + (target.other ?? 0);
   const round = (x: number) => Math.round(x * 1e6) / 1e6;
-  const allocation = { stocks: round(stocks), bonds: round(target.bonds ?? 0), cash: round(target.cash ?? 0) };
+  let allocation = { stocks: round(stocks), bonds: round(target.bonds ?? 0), cash: round(target.cash ?? 0) };
+  if (settings.allocationSource === "actual") {
+    // What is held today in the accounts the projection covers; unclassified funds are left out of the shares.
+    const held = portfolioAllocation(toPositions(holdings.filter((h) => accounts.some((a) => a.id === h.account_id))));
+    if (held.classified > 0) {
+      const share = (...classes: (keyof typeof held.byClass)[]) => classes.reduce((s, c) => s + held.byClass[c], 0) / held.classified;
+      allocation = { stocks: round(share("us_stock", "intl_stock", "real_estate", "other")), bonds: round(share("bonds")), cash: round(share("cash")) };
+    }
+  }
   const feePct = fees(toPositions(holdings)).weighted ?? 0;
 
   // Savings the plan recommends each month, while anyone is still working.
@@ -198,7 +217,11 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     feePct,
     extraSavings,
     spending,
-    taxes: { ordinaryPct: settings.ordinaryTaxPct, capitalGainsPct: settings.capitalGainsPct },
+    taxes: {
+      ordinaryPct: settings.ordinaryTaxPct,
+      capitalGainsPct: settings.capitalGainsPct,
+      ...(settings.taxMode === "brackets" ? { brackets: { table: TAX, filing: household.filingStatus, statePct: settings.stateTaxPct } } : {}),
+    },
     history: RETURNS.years,
     rmd: RMD,
     runs: settings.runs,
@@ -269,14 +292,18 @@ export function retirement(db: Db): RetirementResponse {
     returns: RETURNS.source,
     returnsYears: `${RETURNS.years[0]!.year}–${RETURNS.years.at(-1)!.year}`,
     rmd: RMD.source,
+    tax: TAX.source,
   };
   const publicSettings = {
     successTarget: settings.successTarget,
+    taxMode: settings.taxMode,
+    stateTaxPct: settings.stateTaxPct,
     ordinaryTaxPct: settings.ordinaryTaxPct,
     capitalGainsPct: settings.capitalGainsPct,
     runs: settings.runs,
     blockLength: settings.blockLength,
     returnHaircutPct: settings.returnHaircutPct,
+    allocationSource: settings.allocationSource,
     includePlanSavings: settings.includePlanSavings,
   };
   const who = new Map(getPeople(db).map((p) => [p.id, p.name]));

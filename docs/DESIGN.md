@@ -372,9 +372,11 @@ while Sumday is open; each alert notifies once.
   changed for retirement as you like; timed changes by age (e.g. health
   insurance until Medicare, travel until 75, a mortgage that ends); and
   one-off costs, optionally repeating (a car every 8 years).
-- **Assumptions**: tax on pre-tax withdrawals (default 15%), tax on
-  investment gains (default 15%), success target (default 85%), planning
-  horizon (Settings → Household, default 95 for the youngest adult).
+- **Assumptions**: how taxes are worked out (federal brackets by default,
+  or two flat rates), a flat state rate, success target (default 85%),
+  planning horizon (Settings → Household, default 95 for the youngest
+  adult), a returns stress (points taken off every year), and whether to model
+  the target mix (rebalanced yearly) or the mix actually held today.
 
 ### 11.2 Monte Carlo engine
 
@@ -408,8 +410,20 @@ while Sumday is open; each alert notifies once.
 
 ### 11.3 What it does *not* do (yet)
 
-No federal or state tax brackets, Roth conversion planning, IRMAA, spousal
-or survivor Social Security benefits, or tax-optimized withdrawal order.
+Roth conversion planning, IRMAA, spousal or survivor Social Security
+benefits, tax-optimized withdrawal order, tax drag on dividends while saving,
+the extra deduction at 65+, state rules beyond one flat rate, or a
+mortality-aware horizon.
+
+**Taxes.** In bracket mode (the default) each retirement year is taxed from
+`data/tax/<year>.json`: the standard deduction, ordinary brackets, 0/15/20%
+long-term gains stacked on ordinary income, and partial taxation of Social
+Security (provisional income, with its unindexed thresholds eroded by
+inflation). Pensions, Social Security and required minimums are taxed first;
+the extra needed is drawn from taxable, pre-tax, Roth then HSA, and the amount
+is solved so spending is met after the tax the draw itself causes. Brackets are
+treated as indexed, so they are constant in today's dollars. The tax table is
+entered by hand each year and should be checked against irs.gov.
 When one adult retires before the other, the remaining paycheck is assumed
 to cover spending until the last one retires.
 

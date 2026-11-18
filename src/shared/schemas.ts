@@ -480,11 +480,14 @@ const ageField = z.number().int().min(18).max(120);
 export const retirementSettingsSchema = z.object({
   /** Chance of success to aim for, 0.5–0.99. */
   successTarget: z.number().min(0.5).max(0.99).optional(),
+  taxMode: z.enum(["brackets", "flat"]).optional(),
+  stateTaxPct: z.number().min(0).max(15).optional(),
   ordinaryTaxPct: z.number().min(0).max(60).optional(),
   capitalGainsPct: z.number().min(0).max(40).optional(),
   runs: z.number().int().min(500).max(20_000).optional(),
   blockLength: z.number().int().min(1).max(15).optional(),
   returnHaircutPct: z.number().min(0).max(5).optional(),
+  allocationSource: z.enum(["target", "actual"]).optional(),
   includePlanSavings: z.boolean().optional(),
   /** Changes promoted from scenarios that live in the retirement plan (savings, spending, one-time amounts, a home). */
   events: z.array(overrideSchema).max(30).optional(),

@@ -222,11 +222,14 @@ export interface RetirementResponse {
   missing: string[];
   settings: {
     successTarget: number;
+    taxMode: "brackets" | "flat";
+    stateTaxPct: number;
     ordinaryTaxPct: number;
     capitalGainsPct: number;
     runs: number;
     blockLength: number;
     returnHaircutPct: number;
+    allocationSource: "target" | "actual";
     includePlanSavings: boolean;
   };
   inputs: {
@@ -268,7 +271,7 @@ export interface RetirementResponse {
     /** Runs behind each what-if answer (the headline uses more). */
     whatIfRuns: number;
   } | null;
-  sources: { returns: string; returnsYears: string; rmd: string };
+  sources: { returns: string; returnsYears: string; rmd: string; tax: string };
 }
 
 export interface ScenarioView {

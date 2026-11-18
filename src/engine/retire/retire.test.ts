@@ -4,6 +4,7 @@ import { historicalReplay, simulate, whatIfs, wilson, type HistoricalYear, type 
 import { benefitAtClaim, fullRetirementAge, requiredMinimum, rmdStartAge, seededRandom, type RmdTable } from "./rules.ts";
 import { spendingAtAge, type SpendingPlan } from "./spending.ts";
 import { applyOverrides, describeOverride } from "./overrides.ts";
+import type { TaxSetup, TaxTable } from "./tax.ts";
 
 const RMD = JSON.parse(readFileSync(new URL("../../../data/rmd/uniform-lifetime.json", import.meta.url), "utf8")) as RmdTable;
 const HISTORY = (JSON.parse(readFileSync(new URL("../../../data/returns/us-annual.json", import.meta.url), "utf8")) as { years: HistoricalYear[] }).years;
@@ -372,5 +373,99 @@ describe("simulation properties", () => {
     // A -90% year can only come right after the 0.2 year or at the start of a block, never preceding the 0.1 year in a wrap: 1→2→3 or restarts.
     // So the median stays defined and finite.
     expect(Number.isFinite(r.medianAtEnd)).toBe(true);
+  });
+});
+
+describe("bracket taxes in retirement", () => {
+  const TABLE = JSON.parse(readFileSync(new URL("../../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
+  const setup: TaxSetup = { table: TABLE, filing: "married_joint", statePct: 0 };
+  const brackets = (over: Partial<TaxSetup> = {}) => ({ ordinaryPct: 15, capitalGainsPct: 15, brackets: { ...setup, ...over } });
+  const cents = (d: number) => d * 100;
+
+  it("draws enough from pre-tax money to cover spending after the tax the draw causes", () => {
+    const r = simulate(
+      input({
+        balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(1_000_000) } },
+        spending: Array(30).fill(cents(40_000)),
+        taxes: brackets(),
+      }),
+    );
+    // Married, $32,200 deduction: draw G so that G − 10% × (G − 32,200) = 40,000, so G ≈ 40,866.67.
+    const draw = (40_000 - 3_220) / 0.9;
+    expect(r.bands[0]!.p50).toBeCloseTo(Math.round(cents(1_000_000 - draw) * 1.05), -2);
+  });
+
+  it("pays no tax when gains sit under the deduction and the 0% band", () => {
+    const r = simulate(
+      input({
+        balances: { taxable: cents(1_000_000), taxableBasis: cents(500_000), roth: 0, hsa: 0, traditional: {} },
+        spending: Array(30).fill(cents(40_000)),
+        taxes: brackets(),
+      }),
+    );
+    // Half of each sale is gain: $20,000 of gains, taxed at nothing. The flat 15% would have taken about $1,300 more.
+    expect(r.bands[0]!.p50).toBe(Math.round((cents(1_000_000) - cents(40_000)) * 1.05));
+    const flat = simulate(
+      input({
+        balances: { taxable: cents(1_000_000), taxableBasis: cents(500_000), roth: 0, hsa: 0, traditional: {} },
+        spending: Array(30).fill(cents(40_000)),
+      }),
+    );
+    expect(flat.bands[0]!.p50).toBeLessThan(r.bands[0]!.p50);
+  });
+
+  it("taxes a big spender more than the flat rate does, and a frugal one less", () => {
+    const run = (spend: number, taxes: SimInput["taxes"]) =>
+      simulate(input({ balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(3_000_000) } }, spending: Array(30).fill(cents(spend)), taxes }), {
+        bands: false,
+      });
+    const flat = { ordinaryPct: 15, capitalGainsPct: 15 };
+    // Frugal: $30,000 is under the deduction, so the bracket model pays no tax and lasts at least as long.
+    expect(run(30_000, brackets()).medianDepletionYear ?? 9999).toBeGreaterThanOrEqual(run(30_000, flat).medianDepletionYear ?? 9999);
+    // Big spender: $250,000 reaches the 24% band and beyond, well over a flat 15%.
+    const big = run(250_000, brackets());
+    const bigFlat = run(250_000, flat);
+    expect(big.successRate).toBeLessThanOrEqual(bigFlat.successRate);
+    expect((big.medianDepletionYear ?? 9999) <= (bigFlat.medianDepletionYear ?? 9999)).toBe(true);
+  });
+
+  it("taxes Social Security only once other income pushes past the thresholds", () => {
+    const person = retiree({ socialSecurity: cents(2_500), claimAge: 62 }); // $30,000 a year
+    const run = (traditional: number) =>
+      simulate(
+        input({
+          people: [person],
+          balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(traditional) } },
+          spending: Array(30).fill(cents(60_000)),
+          taxes: brackets(),
+        }),
+      ).bands[0]!.p50;
+    // Spending $60k with $30k of benefits needs about $30k+ more; the result must be finite and the portfolio must shrink.
+    const after = run(1_000_000);
+    expect(after).toBeLessThan(cents(1_000_000) * 1.05);
+    expect(after).toBeGreaterThan(cents(900_000));
+  });
+
+  it("is monotone in spending and never funds more than the money available", () => {
+    const rate = (spend: number) =>
+      simulate(
+        input({
+          history: HISTORY,
+          runs: 1500,
+          balances: { taxable: cents(300_000), taxableBasis: cents(200_000), roth: cents(100_000), hsa: cents(20_000), traditional: { 1: cents(600_000) } },
+          spending: Array(30).fill(cents(spend)),
+          taxes: brackets(),
+        }),
+        { bands: false },
+      ).successRate;
+    expect(rate(40_000)).toBeGreaterThanOrEqual(rate(55_000));
+    expect(rate(55_000)).toBeGreaterThanOrEqual(rate(75_000));
+    expect(rate(500_000)).toBe(0);
+  });
+
+  it("a state tax only ever lowers the result", () => {
+    const rate = (statePct: number) =>
+      simulate(input({ history: HISTORY, runs: 1500, balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(1_500_000) } }, spending: Array(30).fill(cents(70_000)), taxes: brackets({ statePct }) }), { bands: false }).successRate;
+    expect(rate(0)).toBeGreaterThanOrEqual(rate(5));
   });
 });

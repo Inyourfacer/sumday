@@ -16,6 +16,7 @@
  */
 import { matchValue } from "../plan/waterfall.ts";
 import { requiredMinimum, seededRandom, type RmdTable } from "./rules.ts";
+import { incomeTax, type TaxSetup } from "./tax.ts";
 
 export interface HistoricalYear {
   year: number;
@@ -77,7 +78,12 @@ export interface SimInput {
    * (a down payment, a wedding).
    */
   lumpSums?: { year: number; amount: number }[];
-  taxes: { ordinaryPct: number; capitalGainsPct: number };
+  /**
+   * With `brackets`, withdrawals in retirement are taxed from the tax code (brackets,
+   * standard deduction, gains stacked on ordinary income, Social Security taxation).
+   * The flat percentages then only price lump-sum expenses.
+   */
+  taxes: { ordinaryPct: number; capitalGainsPct: number; brackets?: TaxSetup };
   history: readonly HistoricalYear[];
   rmd: RmdTable;
   runs: number;
@@ -209,6 +215,130 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     }
     return need;
   };
+  /** Flat-rate retirement year: spending minus income, grossed up at a flat rate. */
+  const retireFlat = (t: number, f: number): boolean => {
+    const year = input.startYear + t;
+    let need = f * (input.spending[t] ?? 0);
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (p.socialSecurity !== null && age >= p.claimAge) need -= f * p.socialSecurity * 12;
+      if (p.pension && age >= p.pension.startAge) need -= (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+    }
+
+    // Required minimums come out whether needed or not; any extra is reinvested.
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (age < p.rmdStartAge || trad[k]! <= 0) continue;
+      const rmd = Math.min(trad[k]!, f * requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
+      if (rmd <= 0) continue;
+      trad[k] = trad[k]! - rmd;
+      const net = rmd * (1 - ord);
+      if (net > need) {
+        const surplus = net - Math.max(0, need);
+        taxable += surplus;
+        basisNominal += surplus * cumInfl;
+        need = 0;
+      } else need -= net;
+    }
+
+    return withdraw(need) <= 0.5;
+  };
+
+  /**
+   * Bracket-taxed retirement year. Income that is already coming (Social Security,
+   * pensions, required minimums) is taxed first; then the extra needed is drawn
+   * from taxable, pre-tax, Roth and HSA in that order, with the amount found so
+   * that spending is met after the tax that draw itself causes.
+   */
+  const retireWithBrackets = (setup: TaxSetup, t: number, f: number): boolean => {
+    const year = input.startYear + t;
+    const spend = f * (input.spending[t] ?? 0);
+    let ss = 0;
+    let pension = 0;
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (p.socialSecurity !== null && age >= p.claimAge) ss += f * p.socialSecurity * 12;
+      if (p.pension && age >= p.pension.startAge) pension += (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+    }
+    let rmdGross = 0;
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (age < p.rmdStartAge || trad[k]! <= 0) continue;
+      const rmd = Math.min(trad[k]!, f * requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
+      if (rmd <= 0) continue;
+      trad[k] = trad[k]! - rmd;
+      rmdGross += rmd;
+    }
+    // A partial first year is taxed as the whole year it would be, then scaled back.
+    const taxOn = (ordinary: number, gains: number): number => {
+      const full = incomeTax({ ordinary: ordinary / f, socialSecurity: ss / f, gains: gains / f }, setup, cumInfl).total;
+      return full * f;
+    };
+    const cash = ss + pension + rmdGross;
+    const basisReal = Math.min(taxable, basisNominal / cumInfl);
+    const gainShare = taxable > 0 ? Math.max(0, 1 - basisReal / taxable) : 0;
+    let tradTotal = 0;
+    for (let k = 0; k < n; k++) tradTotal += trad[k]!;
+
+    /** What drawing `g` in total (taxable, then pre-tax, Roth, HSA) leaves after tax, and the split. */
+    const draw = (g: number) => {
+      const fromTaxable = Math.min(g, taxable);
+      let rest = g - fromTaxable;
+      const fromTrad = Math.min(rest, tradTotal);
+      rest -= fromTrad;
+      const fromRoth = Math.min(rest, roth);
+      rest -= fromRoth;
+      const fromHsa = Math.min(rest, hsa);
+      rest -= fromHsa;
+      const tax = taxOn(pension + rmdGross + fromTrad, fromTaxable * gainShare);
+      return { fromTaxable, fromTrad, fromRoth, fromHsa, unmet: rest, net: cash + g - rest - tax };
+    };
+
+    const none = draw(0);
+    if (none.net >= spend) {
+      // Required minimums and income already cover spending: reinvest the surplus.
+      const surplus = none.net - spend;
+      taxable += surplus;
+      basisNominal += surplus * cumInfl;
+      return true;
+    }
+    const all = taxable + tradTotal + roth + hsa;
+    if (draw(all).net < spend - 0.5) return false;
+    // After-tax cash rises steadily with the draw, in straight segments between bracket edges, so a
+    // few Newton steps find it; bisection is the fallback if a bracket edge makes it hop.
+    let g = Math.min(all, Math.max(0, spend - cash));
+    let d = draw(g);
+    for (let i = 0; i < 8 && Math.abs(d.net - spend) > 0.5; i++) {
+      const step = Math.max(100, 1e-6 * all);
+      const slope = Math.max(0.3, (draw(Math.min(all, g + step)).net - d.net) / step);
+      g = Math.min(all, Math.max(0, g + (spend - d.net) / slope));
+      d = draw(g);
+    }
+    if (d.net < spend - 0.5 || d.net > spend + 50) {
+      let lo = 0;
+      let hi = all;
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (draw(mid).net >= spend) hi = mid;
+        else lo = mid;
+      }
+      g = hi;
+      d = draw(g);
+    }
+    if (d.fromTaxable > 0) {
+      basisNominal *= 1 - d.fromTaxable / taxable;
+      taxable -= d.fromTaxable;
+    }
+    if (d.fromTrad > 0) for (let k = 0; k < n; k++) trad[k] = trad[k]! - d.fromTrad * (trad[k]! / tradTotal);
+    roth -= d.fromRoth;
+    hsa -= d.fromHsa;
+    return true;
+  };
+
   const lumps = new Map<number, number>();
   for (const l of input.lumpSums ?? []) lumps.set(l.year, (lumps.get(l.year) ?? 0) + l.amount);
 
@@ -261,33 +391,8 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
 
     // Retirement: withdraw what income doesn't cover.
     if (year >= retireYear) {
-      let need = f * (input.spending[t] ?? 0);
-      for (let k = 0; k < n; k++) {
-        const p = people[k]!;
-        const age = year - p.birthYear;
-        if (p.socialSecurity !== null && age >= p.claimAge) need -= f * p.socialSecurity * 12;
-        if (p.pension && age >= p.pension.startAge) need -= (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
-      }
-
-      // Required minimums come out whether needed or not; any extra is reinvested.
-      for (let k = 0; k < n; k++) {
-        const p = people[k]!;
-        const age = year - p.birthYear;
-        if (age < p.rmdStartAge || trad[k]! <= 0) continue;
-        const rmd = Math.min(trad[k]!, f * requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
-        if (rmd <= 0) continue;
-        trad[k] = trad[k]! - (rmd);
-        const net = rmd * (1 - ord);
-        if (net > need) {
-          const surplus = net - Math.max(0, need);
-          taxable += surplus;
-          basisNominal += surplus * cumInfl;
-          need = 0;
-        } else need -= net;
-      }
-
-      need = withdraw(need);
-      if (need > 0.5) {
+      const funded = input.taxes.brackets ? retireWithBrackets(input.taxes.brackets, t, f) : retireFlat(t, f);
+      if (!funded) {
         depletedAt = year;
         totals[t] = 0;
         continue;
