@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { RetirementResponse } from "../../shared/api.ts";
+import type { ClaimingResponse, RetirementResponse } from "../../shared/api.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { compactMoney, pct } from "../chartMath.ts";
 import { FanChart } from "../components/charts.tsx";
@@ -178,6 +178,7 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
   const s = data.settings;
   const [target, setTarget] = useState<number | null>(Math.round(s.successTarget * 100));
   const [ord, setOrd] = useState<number | null>(s.ordinaryTaxPct);
+  const [hair, setHair] = useState<number | null>(s.returnHaircutPct);
   const [cg, setCg] = useState<number | null>(s.capitalGainsPct);
   const [error, setError] = useState<string>();
   const save = async (patch: Record<string, unknown>) => {
@@ -209,6 +210,11 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             <NumberInput value={cg} min={0} max={40} suffix="%" ariaLabel="Tax on investment gains" onChange={setCg} />
           </span>
         </Field>
+        <Field label="Returns stress" hint="Take this many points off every stock and bond return, every year, to plan for a worse future than history">
+          <span onBlur={() => hair !== null && hair !== s.returnHaircutPct && void save({ returnHaircutPct: hair })}>
+            <NumberInput value={hair} min={0} max={5} step={0.5} suffix="points" ariaLabel="Returns stress" onChange={setHair} />
+          </span>
+        </Field>
         <label className="check wide">
           <input type="checkbox" checked={s.includePlanSavings} onChange={(e) => void save({ includePlanSavings: e.target.checked })} />
           Include the savings Next best moves recommends ({money((data.inputs?.extraSavings.total ?? 0) / 12)}/mo now)
@@ -218,7 +224,8 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
       <ul className="small muted assumptions">
         <li>
           {s.runs.toLocaleString("en-US")} simulated futures, each replaying history in random {s.blockLength}-year blocks: stock, bond and cash
-          returns and inflation come from the same real year, so crashes and inflation spikes keep their real company.
+          returns and inflation come from the same real year, so crashes and inflation spikes keep their real company. A block that reaches the
+          end of the data starts over; no run jumps from the latest year back to 1928.
         </li>
         <li>Everything is in today's dollars. Social Security keeps up with inflation; pensions without a COLA don't.</li>
         <li>
@@ -235,6 +242,53 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
         <li>Not included yet: tax brackets, Roth conversions, Medicare surcharges, spousal Social Security benefits.</li>
       </ul>
     </details>
+  );
+}
+
+function ClaimingPanel() {
+  const claiming = useApi<ClaimingResponse>("/api/retirement/claiming");
+  const c = claiming.data;
+  if (!c || !c.ready || c.people.length === 0) return null;
+  return (
+    <section className="panel tight">
+      <h2>When to claim Social Security</h2>
+      <p className="muted small">
+        Chance your money lasts for each claim age, with everything else unchanged. Waiting pays more each month but means drawing on savings
+        longer first. It does not include spousal or survivor benefits yet.
+      </p>
+      {c.people.map((p) => {
+        const best = Math.max(...p.options.map((o) => o.successRate));
+        return (
+          <div key={p.id}>
+            <strong>{p.name}</strong> <span className="muted small">plans to claim at {p.planned}</span>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Claim at</th>
+                  <th className="num">Monthly</th>
+                  <th className="num">Chance it lasts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {p.options.map((o) => (
+                  <tr key={o.age} className={o.age === p.planned ? "current" : undefined}>
+                    <td>
+                      {o.age}
+                      {o.age === p.planned && <span className="muted small"> (planned)</span>}
+                    </td>
+                    <td className="num">{money(o.monthly)}</td>
+                    <td className="num">
+                      {pct(o.successRate)}
+                      {o.successRate === best && o.successRate > 0 && <span className="muted small"> best</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -290,6 +344,10 @@ export function RetirementPage() {
               {i.endYear}.
             </span>
           </p>
+          <p className="muted small">
+            With this many runs the number is good to about ±{Math.round(((r.successInterval[1] - r.successInterval[0]) / 2) * 100)} points
+            ({pct(r.successInterval[0])}–{pct(r.successInterval[1])}). The history it draws on is short, so treat small gaps as ties.
+          </p>
           <span className="mix-bar hero-bar" role="img" aria-label={`${pct(r.successRate)} chance of success; target ${pct(target)}`}>
             <span className="mix-fill" style={{ width: `${r.successRate * 100}%` }} />
             <span className="mix-target" style={{ left: `${target * 100}%` }} />
@@ -309,10 +367,46 @@ export function RetirementPage() {
           </div>
           <div>
             <dt>In the runs that fall short</dt>
-            <dd>{r.medianDepletionYear === null ? "None do" : `money runs out around age ${ageOf(r.medianDepletionYear)} (median)`}</dd>
+            <dd>
+              {r.medianDepletionYear === null
+                ? "None do"
+                : `money runs out around age ${ageOf(r.medianDepletionYear)} (median)${r.earlyDepletionYear !== null ? `, as early as ${ageOf(r.earlyDepletionYear)} in the worst tenth` : ""}`}
+            </dd>
           </div>
+          {r.fragileRate >= 0.01 && (
+            <div>
+              <dt>Close calls</dt>
+              <dd>{pct(r.fragileRate)} of futures last but end with under 3 years of spending left</dd>
+            </div>
+          )}
         </dl>
       </section>
+
+      {d.checks && (
+        <section className="panel tight">
+          <h2>Other ways to look at it</h2>
+          <dl className="hero-facts">
+            <div>
+              <dt>Living each real start year in order</dt>
+              <dd>
+                {pct(d.checks.replay.successRate)}{" "}
+                <span className="muted small">of {d.checks.replay.startYears} historical starts (the classic safe-withdrawal method)</span>
+              </dd>
+            </div>
+            <div>
+              <dt>If returns are {d.checks.stress.haircutPct} point a year lower</dt>
+              <dd>{pct(d.checks.stress.successRate)}</dd>
+            </div>
+          </dl>
+          <p className="muted small">
+            Different methods answer slightly different questions. If they agree, trust the number more; if they split, the plan is more
+            sensitive to what the future looks like than one figure suggests. What-if answers below use {d.checks.whatIfRuns.toLocaleString("en-US")} runs, so
+            they are approximate near the target.
+          </p>
+        </section>
+      )}
+
+      <ClaimingPanel />
 
       {d.events.length > 0 && (
         <section className="panel">

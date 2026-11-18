@@ -170,6 +170,18 @@ export interface HoldingsImportResult {
   value: number;
 }
 
+/** Success by Social Security claim age, per person (GET /api/retirement/claiming). */
+export interface ClaimingResponse {
+  ready: boolean;
+  people: {
+    id: number;
+    name: string;
+    /** The claim age in the plan today. */
+    planned: number;
+    options: { age: number; monthly: number; successRate: number; medianAtEnd: number }[];
+  }[];
+}
+
 export interface RetirementResponse {
   ready: boolean;
   /** What's missing before a projection can run. */
@@ -180,6 +192,7 @@ export interface RetirementResponse {
     capitalGainsPct: number;
     runs: number;
     blockLength: number;
+    returnHaircutPct: number;
     includePlanSavings: boolean;
   };
   inputs: {
@@ -212,6 +225,15 @@ export interface RetirementResponse {
   events: string[];
   result: import("../engine/retire/montecarlo.ts").SimResult | null;
   whatIfs: import("../engine/retire/montecarlo.ts").WhatIfs | null;
+  /** The same plan seen two other ways, so one method's quirks don't decide the answer. */
+  checks: {
+    /** Success with a worse future: stock and bond returns lower by `haircutPct` points a year. */
+    stress: { haircutPct: number; successRate: number };
+    /** Success when each real historical start year is lived through in order (no randomness). */
+    replay: { successRate: number; startYears: number };
+    /** Runs behind each what-if answer (the headline uses more). */
+    whatIfRuns: number;
+  } | null;
   sources: { returns: string; returnsYears: string; rmd: string };
 }
 

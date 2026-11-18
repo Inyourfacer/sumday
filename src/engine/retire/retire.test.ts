@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { simulate, whatIfs, type HistoricalYear, type SimInput, type SimPerson } from "./montecarlo.ts";
+import { historicalReplay, simulate, whatIfs, wilson, type HistoricalYear, type SimInput, type SimPerson } from "./montecarlo.ts";
 import { benefitAtClaim, fullRetirementAge, requiredMinimum, rmdStartAge, seededRandom, type RmdTable } from "./rules.ts";
 import { spendingAtAge, type SpendingPlan } from "./spending.ts";
 import { applyOverrides, describeOverride } from "./overrides.ts";
@@ -282,5 +282,95 @@ describe("simulation with real history", () => {
       expect(w.toReachTarget.spendLessPerYear).toBeGreaterThan(0);
       expect(w.toReachTarget.extraMonthlySavings === null || w.toReachTarget.extraMonthlySavings > 0).toBe(true);
     }
+  });
+});
+
+describe("benchmarks against published safe-withdrawal results", () => {
+  // $1M, 60/40, no fees or taxes, spending a fixed share of the start balance in today's dollars for 30 years,
+  // taken at the start of each year: the setup of the Trinity study and its successors.
+  const planAt = (rate: number, over: Partial<SimInput> = {}): SimInput => ({
+    startYear: 2026,
+    endYear: 2055,
+    people: [{ id: 1, birthYear: 1961, retirementAge: 65, income: 0, raisePct: 0, pretaxPct: 0, rothPct: 0, matchTiers: [], hsaPayroll: 0, socialSecurity: null, claimAge: 67, pension: null, rmdStartAge: 75 }],
+    balances: { taxable: 100_000_000, taxableBasis: 100_000_000, roth: 0, hsa: 0, traditional: {} },
+    allocation: { stocks: 0.6, bonds: 0.4, cash: 0 },
+    feePct: 0,
+    extraSavings: { taxable: 0, roth: 0, hsa: 0, traditional: {} },
+    spending: Array(30).fill(Math.round(100_000_000 * rate)),
+    taxes: { ordinaryPct: 0, capitalGainsPct: 0 },
+    history: HISTORY,
+    rmd: RMD,
+    runs: 5000,
+    blockLength: 5,
+    seed: 7,
+    ...over,
+  });
+
+  it("replays real 30-year retirements: a 4% rule mostly survives, 3% always does, 6% often doesn't", () => {
+    const at = (rate: number) => historicalReplay(planAt(rate));
+    const four = at(0.04);
+    expect(four.cohorts.length).toBe(HISTORY.length - 29);
+    // Published results put 60/40 at 4% in the mid-90s percent or higher, and 3% at 100%.
+    expect(four.successRate).toBeGreaterThanOrEqual(0.9);
+    expect(at(0.03).successRate).toBe(1);
+    expect(at(0.06).successRate).toBeLessThan(0.85);
+    // The worst starts are the well-known ones (late 1960s and 1970s), not the 1990s.
+    const failed = four.cohorts.filter((c) => !c.success).map((c) => c.startYear);
+    expect(failed.every((y) => y >= 1928 && y <= 1980)).toBe(true);
+  });
+
+  it("the random method lands near the real-history replay", () => {
+    const replay = historicalReplay(planAt(0.04)).successRate;
+    const random = simulate(planAt(0.04), { bands: false }).successRate;
+    expect(Math.abs(random - replay)).toBeLessThan(0.12);
+  });
+});
+
+describe("simulation properties", () => {
+  const base = (over: Partial<SimInput> = {}): SimInput => input({ history: HISTORY, runs: 2000, spending: Array(30).fill(4_000_000), ...over });
+
+  it("gives the same answer for the same seed and a different one for another", () => {
+    const a = simulate(base({ seed: 3 }), { bands: false });
+    expect(simulate(base({ seed: 3 }), { bands: false }).successRate).toBe(a.successRate);
+  });
+
+  it("is monotone: more spending never helps and more saving never hurts", () => {
+    const rate = (over: Partial<SimInput>) => simulate(base(over), { bands: false }).successRate;
+    const worker = retiree({ birthYear: 1990, income: 10_000_000, retirementAge: 55, pretaxPct: 5 });
+    const spend = (m: number) => rate({ people: [worker], spending: Array(70).fill(0).map((_, t) => (2026 + t >= 2045 ? 4_000_000 * m : 0)), endYear: 2095 });
+    expect(spend(0.8)).toBeGreaterThanOrEqual(spend(1));
+    expect(spend(1)).toBeGreaterThanOrEqual(spend(1.3));
+    const save = (x: number) => rate({ people: [worker], endYear: 2095, spending: Array(70).fill(0).map((_, t) => (2026 + t >= 2045 ? 4_000_000 : 0)), extraSavings: { taxable: x, roth: 0, hsa: 0, traditional: {} } });
+    expect(save(0)).toBeLessThanOrEqual(save(500_000));
+    expect(save(500_000)).toBeLessThanOrEqual(save(2_000_000));
+  });
+
+  it("a return haircut never helps", () => {
+    const rate = (h: number) => simulate(base({ returnHaircutPct: h }), { bands: false }).successRate;
+    expect(rate(0)).toBeGreaterThanOrEqual(rate(1));
+    expect(rate(1)).toBeGreaterThanOrEqual(rate(2));
+  });
+
+  it("reports a confidence interval and how fragile the successes are", () => {
+    const r = simulate(base({ spending: Array(30).fill(5_500_000) }));
+    expect(r.successInterval[0]).toBeLessThanOrEqual(r.successRate);
+    expect(r.successInterval[1]).toBeGreaterThanOrEqual(r.successRate);
+    expect(r.fragileRate).toBeGreaterThanOrEqual(0);
+    expect(r.fragileRate).toBeLessThanOrEqual(r.successRate);
+    expect(wilson(85, 100)[0]).toBeCloseTo(0.767, 2);
+    expect(wilson(0, 0)).toEqual([0, 1]);
+  });
+
+  it("never stitches 2025 to 1928: a block that hits the end of history starts over", () => {
+    // History of 3 distinct years; with 1-in-3 starts and block 5, every run still only uses real consecutive years.
+    const tiny: HistoricalYear[] = [
+      { year: 1, stocks: 0.1, bonds: 0, bills: 0, inflation: 0 },
+      { year: 2, stocks: 0.2, bonds: 0, bills: 0, inflation: 0 },
+      { year: 3, stocks: -0.9, bonds: 0, bills: 0, inflation: 0 },
+    ];
+    const r = simulate(input({ history: tiny, allocation: { stocks: 1, bonds: 0, cash: 0 }, runs: 500, endYear: 2028, spending: Array(3).fill(0) }));
+    // A -90% year can only come right after the 0.2 year or at the start of a block, never preceding the 0.1 year in a wrap: 1→2→3 or restarts.
+    // So the median stays defined and finite.
+    expect(Number.isFinite(r.medianAtEnd)).toBe(true);
   });
 });

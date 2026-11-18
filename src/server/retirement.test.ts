@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextMonth } from "../engine/budget/budget.ts";
-import type { AccountView, BudgetResponse, CategoryView, RetirementResponse } from "../shared/api.ts";
+import type { AccountView, BudgetResponse, CategoryView, ClaimingResponse, RetirementResponse } from "../shared/api.ts";
 import { buildApp } from "./app.ts";
 import { openDb, type Db } from "./db.ts";
 
@@ -106,6 +106,36 @@ describe("retirement", () => {
 
     // Same inputs, same answer.
     expect((await ok<RetirementResponse>("GET", "/api/retirement")).result!.successRate).toBe(res.successRate);
+  });
+
+  it("shows the result several ways: interval, stress, real-history replay", async () => {
+    await household();
+    const r = await ok<RetirementResponse>("GET", "/api/retirement");
+    const [lo, hi] = r.result!.successInterval;
+    expect(lo).toBeLessThanOrEqual(r.result!.successRate);
+    expect(hi).toBeGreaterThanOrEqual(r.result!.successRate);
+    expect(r.checks!.stress.haircutPct).toBe(1);
+    // One point a year less return never helps.
+    expect(r.checks!.stress.successRate).toBeLessThanOrEqual(r.result!.successRate + 0.03);
+    expect(r.checks!.replay.startYears).toBeGreaterThan(0);
+    // A standing haircut setting lowers the headline too.
+    const worse = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { returnHaircutPct: 2 });
+    expect(worse.settings.returnHaircutPct).toBe(2);
+    expect(worse.result!.successRate).toBeLessThanOrEqual(r.result!.successRate);
+  });
+
+  it("compares Social Security claim ages", async () => {
+    expect((await ok<ClaimingResponse>("GET", "/api/retirement/claiming")).ready).toBe(false);
+    await household();
+    const c = await ok<ClaimingResponse>("GET", "/api/retirement/claiming");
+    expect(c.people.map((p) => p.name)).toEqual(["Alex", "Sam"]);
+    const alex = c.people[0]!;
+    expect(alex.planned).toBe(67);
+    expect(alex.options.map((o) => o.age)).toEqual([62, 63, 64, 65, 66, 67, 68, 69, 70]);
+    // FRA benefit at 67 is the stated $3,000; waiting pays more per month.
+    expect(alex.options.find((o) => o.age === 67)!.monthly).toBe(300_000);
+    expect(alex.options[8]!.monthly).toBeGreaterThan(alex.options[0]!.monthly);
+    expect(alex.options.every((o) => o.successRate >= 0 && o.successRate <= 1)).toBe(true);
   });
 
   it("adjusts retirement spending by category, timed items and one-offs", async () => {

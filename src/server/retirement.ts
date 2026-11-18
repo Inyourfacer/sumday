@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { parseIsoDate } from "../engine/dates.ts";
 import { fees } from "../engine/invest/portfolio.ts";
-import { simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
+import { historicalReplay, simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
 import { benefitAtClaim, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
 import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
-import type { RetirementResponse } from "../shared/api.ts";
+import type { ClaimingResponse, RetirementResponse } from "../shared/api.ts";
 import { retirementSettingsSchema } from "../shared/schemas.ts";
 import { listAccounts } from "./accounts.ts";
 import { today } from "./budget.ts";
@@ -29,6 +29,8 @@ interface StoredSettings {
   capitalGainsPct: number;
   runs: number;
   blockLength: number;
+  /** Percentage points taken off stock and bond returns, to test a worse future than history. */
+  returnHaircutPct: number;
   includePlanSavings: boolean;
   spending: { categoryOverrides: Record<string, number | null>; items: SpendingPlan["items"]; oneOffs: SpendingPlan["oneOffs"] };
   /** Changes promoted from scenarios (extra savings, spending changes, one-time amounts, a home). */
@@ -41,6 +43,7 @@ const DEFAULTS: StoredSettings = {
   capitalGainsPct: 15,
   runs: 10_000,
   blockLength: 5,
+  returnHaircutPct: 0,
   includePlanSavings: true,
   spending: { categoryOverrides: {}, items: [], oneOffs: [] },
   events: [],
@@ -200,6 +203,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     rmd: RMD,
     runs: settings.runs,
     blockLength: settings.blockLength,
+    returnHaircutPct: settings.returnHaircutPct,
     seed: 20_260_101,
   };
   // Events promoted from scenarios apply on top of the plan.
@@ -239,9 +243,17 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
   };
 }
 
+/** Runs behind each what-if answer; fewer than the headline for speed, so they are labelled approximate. */
+const WHAT_IF_RUNS = 3000;
+
 // Results are cached by their exact inputs: the same question gets the same (seeded) answer.
-const cache = new Map<string, { result: SimResult; whatIfs: WhatIfs | null }>();
-function cached(key: string, run: () => { result: SimResult; whatIfs: WhatIfs | null }) {
+interface Cached {
+  result: SimResult;
+  whatIfs: WhatIfs | null;
+  checks: NonNullable<RetirementResponse["checks"]>;
+}
+const cache = new Map<string, Cached>();
+function cached(key: string, run: () => Cached) {
   const hit = cache.get(key);
   if (hit) return hit;
   const value = run();
@@ -264,21 +276,61 @@ export function retirement(db: Db): RetirementResponse {
     capitalGainsPct: settings.capitalGainsPct,
     runs: settings.runs,
     blockLength: settings.blockLength,
+    returnHaircutPct: settings.returnHaircutPct,
     includePlanSavings: settings.includePlanSavings,
   };
   const who = new Map(getPeople(db).map((p) => [p.id, p.name]));
   const events = settings.events.map((o) => describeOverride(o, who));
-  if (!built) return { ready: false, missing, settings: publicSettings, inputs: null, events, result: null, whatIfs: null, sources };
+  if (!built) return { ready: false, missing, settings: publicSettings, inputs: null, events, result: null, whatIfs: null, checks: null, sources };
   const key = JSON.stringify({ i: { ...built.input, history: undefined, rmd: undefined }, t: settings.successTarget, w: true });
-  const { result, whatIfs: w } = cached(key, () => {
+  const { result, whatIfs: w, checks } = cached(key, () => {
     const result = simulate(built.input);
-    return { result, whatIfs: whatIfs(built.input, settings.successTarget, result, 1500, built.view.spending.firstYear) };
+    // Two other ways to look at the same plan, so one method's quirks don't decide the answer.
+    const stressPoints = 1;
+    const stress = simulate({ ...built.input, returnHaircutPct: (built.input.returnHaircutPct ?? 0) + stressPoints }, { bands: false });
+    const replay = historicalReplay(built.input);
+    return {
+      result,
+      whatIfs: whatIfs(built.input, settings.successTarget, result, WHAT_IF_RUNS, built.view.spending.firstYear),
+      checks: {
+        stress: { haircutPct: stressPoints, successRate: stress.successRate },
+        replay: { successRate: replay.successRate, startYears: replay.cohorts.length },
+        whatIfRuns: WHAT_IF_RUNS,
+      },
+    };
   });
-  return { ready: true, missing: [], settings: publicSettings, inputs: built.view, events, result, whatIfs: w, sources };
+  return { ready: true, missing: [], settings: publicSettings, inputs: built.view, events, result, whatIfs: w, checks, sources };
+}
+
+/**
+ * For each person with Social Security estimates: the chance the money lasts
+ * if they claim at each age from 62 to 70, everything else unchanged. Same
+ * seed for every age, so the differences come from the claim age alone.
+ */
+export function claiming(db: Db): ClaimingResponse {
+  const settings = getSettings(db);
+  const { built } = buildInput(db, settings);
+  if (!built) return { ready: false, people: [] };
+  const people = getPeople(db);
+  const out: ClaimingResponse["people"] = [];
+  built.input.people.forEach((sp, k) => {
+    const person = people.find((p) => p.id === sp.id);
+    if (!person || benefitAtClaim(person.socialSecurity, person.ssClaimAge, sp.birthYear) === null) return;
+    const options = [];
+    for (let age = 62; age <= 70; age++) {
+      const monthly = benefitAtClaim(person.socialSecurity, age, sp.birthYear)!;
+      const simPeople = built.input.people.map((x, i) => (i === k ? { ...x, socialSecurity: monthly, claimAge: age } : x));
+      const r = simulate({ ...built.input, people: simPeople, runs: 3000 }, { bands: false });
+      options.push({ age, monthly, successRate: r.successRate, medianAtEnd: r.medianAtEnd });
+    }
+    out.push({ id: sp.id, name: person.name, planned: person.ssClaimAge, options });
+  });
+  return { ready: true, people: out };
 }
 
 export function registerRetirementRoutes(app: FastifyInstance, db: Db): void {
   app.get("/api/retirement", async () => retirement(db));
+  app.get("/api/retirement/claiming", async () => claiming(db));
 
   app.put("/api/retirement/settings", async (request) => {
     const patch = parse(retirementSettingsSchema, request.body);

@@ -479,6 +479,7 @@ export const retirementSettingsSchema = z.object({
   capitalGainsPct: z.number().min(0).max(40).optional(),
   runs: z.number().int().min(500).max(20_000).optional(),
   blockLength: z.number().int().min(1).max(15).optional(),
+  returnHaircutPct: z.number().min(0).max(5).optional(),
   includePlanSavings: z.boolean().optional(),
   /** Changes promoted from scenarios that live in the retirement plan (savings, spending, one-time amounts, a home). */
   events: z.array(overrideSchema).max(30).optional(),

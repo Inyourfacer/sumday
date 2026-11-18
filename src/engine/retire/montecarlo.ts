@@ -1,7 +1,7 @@
 /**
  * Monte Carlo retirement simulation (DESIGN §11.2).
  *
- * Each run replays history in random blocks: a year's stock, bond and
+ * Each run replays history in random blocks (never wrapping 2025 back to 1928): a year's stock, bond and
  * T-bill returns and inflation are drawn together from one real historical
  * year, so crashes, bond slumps and inflation spikes keep their real
  * company; blocks of consecutive years keep bad stretches together.
@@ -82,6 +82,8 @@ export interface SimInput {
   rmd: RmdTable;
   runs: number;
   blockLength: number;
+  /** Percentage points taken off every stock and bond return, to test a worse future than history (default 0). */
+  returnHaircutPct?: number;
   seed: number;
 }
 
@@ -106,6 +108,23 @@ export interface SimResult {
   /** Of failed runs, the median year the money ran out. */
   medianDepletionYear: number | null;
   failedRuns: number;
+  /** 95% interval for `successRate` from the number of runs (Wilson). */
+  successInterval: [number, number];
+  /** Of failed runs, the year by which the earliest tenth had run out. */
+  earlyDepletionYear: number | null;
+  /** Share of runs that last to the end but finish with under three years of spending left. */
+  fragileRate: number;
+}
+
+/** 95% Wilson interval for a share seen in `n` runs. */
+export function wilson(successes: number, n: number): [number, number] {
+  if (n === 0) return [0, 1];
+  const z = 1.96;
+  const p = successes / n;
+  const denom = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return [Math.max(0, centre - half), Math.min(1, centre + half)];
 }
 
 /** When spending starts: the year the last person with a paycheck retires (or this year if nobody works). */
@@ -115,12 +134,16 @@ export function retirementYear(input: Pick<SimInput, "people" | "startYear">): n
   return Math.max(input.startYear, ...workers.map((p) => p.birthYear + p.retirementAge));
 }
 
-/** Indices into history for one run: circular blocks of consecutive years. */
+/**
+ * Indices into history for one run: blocks of consecutive years. A block that
+ * reaches the last year of history ends there and a new one starts, so no run
+ * joins 2025 to 1928, a sequence that never happened.
+ */
 function sequence(n: number, length: number, block: number, rand: () => number): number[] {
   const out: number[] = [];
   while (out.length < length) {
     const start = Math.floor(rand() * n);
-    for (let k = 0; k < block && out.length < length; k++) out.push((start + k) % n);
+    for (let k = 0; k < block && start + k < n && out.length < length; k++) out.push(start + k);
   }
   return out;
 }
@@ -201,7 +224,7 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       continue;
     }
     const growth =
-      a.stocks * ((1 + h.stocks) / infl1 - 1) + a.bonds * ((1 + h.bonds) / infl1 - 1) + a.cash * ((1 + h.bills) / infl1 - 1) - input.feePct / 100;
+      a.stocks * ((1 + h.stocks) / infl1 - 1) + a.bonds * ((1 + h.bonds) / infl1 - 1) + a.cash * ((1 + h.bills) / infl1 - 1) - input.feePct / 100 - ((a.stocks + a.bonds) * (input.returnHaircutPct ?? 0)) / 100;
 
     // Working years: contributions in.
     let anyoneWorking = false;
@@ -299,13 +322,17 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
   const wantBands = options.bands ?? true;
   const columns = wantBands ? Array.from({ length: T }, () => new Float64Array(input.runs)) : [];
   let successes = 0;
+  let fragile = 0;
+  const lastSpend = input.spending.at(-1) ?? 0;
   const depletion: number[] = [];
 
   for (let r = 0; r < input.runs; r++) {
     const years = sequence(input.history.length, T, Math.max(1, input.blockLength), rand);
     const { totals, depletedAt } = runPath(input, years, retireYear);
-    if (depletedAt === null) successes += 1;
-    else depletion.push(depletedAt);
+    if (depletedAt === null) {
+      successes += 1;
+      if (totals[T - 1]! < 3 * lastSpend) fragile += 1;
+    } else depletion.push(depletedAt);
     if (wantBands) for (let t = 0; t < T; t++) columns[t]![r] = totals[t]!;
   }
 
@@ -331,7 +358,27 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
     medianAtEnd: bands.at(-1)?.p50 ?? 0,
     medianDepletionYear: depletion.length ? depletion[Math.floor(depletion.length / 2)]! : null,
     failedRuns: depletion.length,
+    successInterval: wilson(successes, input.runs),
+    earlyDepletionYear: depletion.length ? depletion[Math.floor(depletion.length / 10)]! : null,
+    fragileRate: fragile / input.runs,
   };
+}
+
+/**
+ * Replay every real historical start year in order (no randomness): the same
+ * plan lived through 1928, 1929, 1930 and so on, as long as history lasts.
+ * The classic way safe-withdrawal studies are run, so results can be checked
+ * against published numbers.
+ */
+export function historicalReplay(input: SimInput): { successRate: number; cohorts: { startYear: number; success: boolean }[] } {
+  const T = Math.max(1, input.endYear - input.startYear + 1);
+  const retireYear = retirementYear(input);
+  const cohorts: { startYear: number; success: boolean }[] = [];
+  for (let s = 0; s + T <= input.history.length; s++) {
+    const years = Array.from({ length: T }, (_, k) => s + k);
+    cohorts.push({ startYear: input.history[s]!.year, success: runPath(input, years, retireYear).depletedAt === null });
+  }
+  return { successRate: cohorts.length ? cohorts.filter((c) => c.success).length / cohorts.length : 0, cohorts };
 }
 
 /**
