@@ -115,7 +115,7 @@ describe("backups and export", () => {
     const json = await call("GET", "/api/export/json");
     expect(json.headers["content-disposition"]).toContain("attachment");
     const data = json.json() as { schemaVersion: number; tables: Record<string, Record<string, unknown>[]> };
-    expect(data.schemaVersion).toBe(6);
+    expect(data.schemaVersion).toBe(7);
     expect(data.tables.transactions).toHaveLength(5);
     expect(typeof data.tables.people).toBe("object");
     expect(data.tables.settings!.every((s) => typeof s.value !== "string" || !String(s.value).startsWith("{"))).toBe(true);

@@ -1,5 +1,5 @@
 import { addDays } from "../../engine/dates.ts";
-import type { AccountView, BudgetResponse, NetWorthResponse, PlanResponse, RecurringResponse, RetirementResponse, SummaryResponse } from "../../shared/api.ts";
+import type { AccountView, BudgetResponse, MoveImpactsResponse, NetWorthResponse, PlanResponse, RecurringResponse, RetirementResponse, SummaryResponse } from "../../shared/api.ts";
 import { useApi } from "../api.ts";
 import { AlertsPanel } from "../components/Alerts.tsx";
 import { Meter } from "../components/charts.tsx";
@@ -14,8 +14,13 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
   const recurring = useApi<RecurringResponse>("/api/recurring");
   const plan = useApi<PlanResponse>("/api/plan");
   const retirement = useApi<RetirementResponse>("/api/retirement");
+  const impacts = useApi<MoveImpactsResponse>("/api/plan/impacts");
   const ret = retirement.data;
-  const moves = (plan.data?.result.recommendations ?? []).filter((r) => r.status === "act" || r.status === "partial");
+  const impactOf = new Map((impacts.data?.impacts ?? []).map((i) => [i.key, i.successPoints]));
+  // Safety steps keep their place; the rest are listed with the biggest effect on retirement first.
+  const SAFETY = new Set(["starter_emergency", "employer_match", "high_interest_debt", "full_emergency"]);
+  const candidates = (plan.data?.result.recommendations ?? []).filter((r) => (r.status === "act" || r.status === "partial") && !r.userState);
+  const moves = [...candidates.filter((r) => SAFETY.has(r.step)), ...candidates.filter((r) => !SAFETY.has(r.step)).sort((a, b) => (impactOf.get(b.key) ?? 0) - (impactOf.get(a.key) ?? 0))];
   const b = budget.data?.budget;
   const bills = (recurring.data?.upcoming ?? []).filter((u) => u.amount < 0 && !u.isTransfer && u.date <= addDays(recurring.data!.today, 7));
   const open = (accounts.data ?? []).filter((a) => !a.isClosed);
@@ -84,8 +89,12 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
           ) : (
             <ol className="mini-moves">
               {moves.slice(0, 4).map((r) => (
-                <li key={`${r.step}-${r.subject?.id ?? 0}`}>
-                  <span>{r.action}</span>
+                <li key={r.key}>
+                  <span>
+                    {r.action}
+                    {(impactOf.get(r.key) ?? 0) >= 0.1 && <span className="muted small"> +{impactOf.get(r.key)} pts retirement odds</span>}
+                    {r.deadline && <span className="muted small"> · by {formatDate(r.deadline.date)}</span>}
+                  </span>
                   <strong>{formatMoney(r.amount, { cents: false })}/mo</strong>
                 </li>
               ))}

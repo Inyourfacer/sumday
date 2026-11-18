@@ -22,6 +22,15 @@ export interface PlanSettings {
   /** null = 3 months with two earners, 6 with one. */
   emergencyMonths: number | null;
   availableOverride: number | null;
+  /** Marginal income-tax rate (%). null = treat pre-tax payroll dollars as take-home dollars. */
+  marginalTaxPct: number | null;
+}
+
+/** What each move is worth to retirement (see server/moveImpact.ts). */
+export interface MoveImpactsResponse {
+  available: boolean;
+  runs?: number;
+  impacts: { key: string; successPoints: number; medianAtEnd: number }[];
 }
 
 export interface PlanAlert {

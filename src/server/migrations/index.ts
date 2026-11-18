@@ -289,4 +289,19 @@ export const migrations: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 7,
+    name: "next-best-move states",
+    sql: `
+      -- What you did with a recommendation. Done and snoozed expire on their date; dismissed
+      -- holds until the move's fingerprint (its status and size) changes.
+      CREATE TABLE move_states (
+        key         TEXT PRIMARY KEY,
+        state       TEXT NOT NULL CHECK (state IN ('done', 'snoozed', 'dismissed')),
+        until       TEXT,
+        fingerprint TEXT NOT NULL,
+        updated_at  TEXT NOT NULL DEFAULT ${NOW}
+      ) STRICT;
+    `,
+  },
 ];

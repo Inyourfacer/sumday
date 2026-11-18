@@ -169,11 +169,11 @@ describe("waterfall", () => {
     const r = runWaterfall(input({ available: 2_000_000, emergencySaved: 1_500_000, debts: [], hsaCoverage: "family", hsaProjected: 300_000 }));
     expect(byStep(r, "high_interest_debt")[0]!.status).toBe("done");
     expect(byStep(r, "full_emergency")[0]!.status).toBe("done");
-    // HSA family $8,750 − $3,000 = $5,750 over the 2 months left.
-    expect(byStep(r, "hsa")[0]).toMatchObject({ status: "act", amount: 287_500 });
-    // $7,500 each over 2 months; household income $120k → Roth.
+    // HSA family $8,750 − $3,000 = $5,750, spread over the 2 months left plus 3 months of filing-deadline grace.
+    expect(byStep(r, "hsa")[0]).toMatchObject({ status: "act", amount: 115_000 });
+    // $7,500 each over 5 months; household income $120k → Roth.
     const ira = byStep(r, "ira");
-    expect(ira.map((x) => x.amount)).toEqual([375_000, 375_000]);
+    expect(ira.map((x) => x.amount)).toEqual([150_000, 150_000]);
     expect(ira[0]!.action).toContain("Roth IRA");
     // After the match step Alex is at 5% ($6,000/yr); room $18,500 → $1,542/mo, about 20.5% of pay.
     const max = byStep(r, "max_workplace")[0]!;
@@ -181,9 +181,38 @@ describe("waterfall", () => {
     expect(max.action).toContain("20%");
     expect(byStep(r, "goals")[0]).toMatchObject({ status: "act", amount: 100_000 });
     const taxable = byStep(r, "taxable")[0]!;
-    expect(taxable.amount).toBe(2_000_000 - 20_000 - 287_500 - 750_000 - 154_167 - 100_000);
+    expect(taxable.amount).toBe(2_000_000 - 20_000 - 115_000 - 300_000 - 154_167 - 100_000);
     expect(taxable.action).toContain("add one under Accounts");
     expect(r.leftover).toBe(0);
+  });
+
+  it("spreads IRA room so December doesn't demand the whole remainder", () => {
+    const late = runWaterfall(input({ today: "2026-12-10", available: 2_000_000, emergencySaved: 1_500_000, debts: [], hsaCoverage: "none" }));
+    // 1 month left + 3 grace = 4 months: $1,875 each, not $7,500.
+    expect(byStep(late, "ira").map((x) => x.amount)).toEqual([187_500, 187_500]);
+  });
+
+  it("charges pre-tax payroll contributions at their take-home cost", () => {
+    const base = input({ params: { ...input().params, marginalTaxPct: 20 } });
+    const match = byStep(runWaterfall(base), "employer_match")[0]!;
+    // 2% of $120k / 12 = $200 into the plan, which costs $160 of take-home at 20%.
+    expect(match.amount).toBe(16_000);
+    expect(match.contribution).toBe(20_000);
+    expect(match.action).toBe("Raise Alex's 401k contribution from 3% to 5% of pay.");
+    // A partly funded step still lands on a whole percentage.
+    const tight = runWaterfall(input({ available: 8_000, params: { ...input().params, marginalTaxPct: 20 } }));
+    expect(byStep(tight, "employer_match")[0]).toMatchObject({ status: "partial", amount: 8_000, contribution: 10_000 });
+  });
+
+  it("keys each move and gives it a deadline", () => {
+    const r = runWaterfall(input({ available: 2_000_000, emergencySaved: 1_500_000, debts: [], hsaCoverage: "family" }));
+    const keys = r.recommendations.map((x) => x.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(byStep(r, "ira")[0]!.key).toBe("ira:person:1");
+    expect(byStep(r, "ira")[0]!.deadline).toEqual({ date: "2027-04-15", label: "Counts for this year until Apr 15" });
+    expect(byStep(r, "max_workplace")[0]!.deadline?.date).toBe("2026-12-31");
+    expect(byStep(r, "goals")[0]!.deadline).toEqual({ date: "2028-06-30", label: "Goal date" });
+    expect(byStep(r, "taxable")[0]!.deadline).toBeUndefined();
   });
 
   it("respects order and disabled steps", () => {

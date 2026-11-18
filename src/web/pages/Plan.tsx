@@ -1,11 +1,11 @@
 import { useState } from "react";
-import type { PlanResponse, Recommendation, RetirementResponse } from "../../shared/api.ts";
+import type { MoveImpactsResponse, PlanResponse, Recommendation, RetirementResponse } from "../../shared/api.ts";
 import { STEP_TITLES } from "../../engine/plan/waterfall.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { monthTitle } from "../chartMath.ts";
 import { ErrorNote, Field, Loading, MoneyInput, NumberInput, PageHeader } from "../components/ui.tsx";
 import { formatFact } from "../facts.ts";
-import { formatMoney } from "../format.ts";
+import { formatDate, formatMoney } from "../format.ts";
 import { Link } from "../router.tsx";
 
 const STATUS_LABEL: Record<Recommendation["status"], string> = {
@@ -17,7 +17,11 @@ const STATUS_LABEL: Record<Recommendation["status"], string> = {
   disabled: "Off",
 };
 
-function Move({ rec, index }: { rec: Recommendation; index: number }) {
+type MoveAction = "done" | "snooze" | "dismiss" | "restore";
+type Impact = MoveImpactsResponse["impacts"][number];
+
+function Move({ rec, index, impact, onAct }: { rec: Recommendation; index: number; impact?: Impact; onAct: (key: string, action: MoveAction) => void }) {
+  const away = rec.userState;
   return (
     <li className={`move ${rec.status}`}>
       <span className="move-num" aria-hidden>
@@ -32,6 +36,17 @@ function Move({ rec, index }: { rec: Recommendation; index: number }) {
         </div>
         <p className="move-action">{rec.action}</p>
         <p className="muted small">{rec.why}</p>
+        {impact && impact.successPoints >= 0.1 && (
+          <p className="small move-impact">
+            Doing this adds about {impact.successPoints} points to the chance your money lasts
+            {impact.medianAtEnd > 0 && <> and about {formatMoney(impact.medianAtEnd, { cents: false })} to the median portfolio at the end (today's dollars)</>}.
+          </p>
+        )}
+        {rec.deadline && (
+          <p className="muted small">
+            {rec.deadline.label}: {formatDate(rec.deadline.date)}
+          </p>
+        )}
         {rec.facts.length > 0 && (
           <details className="facts">
             <summary>The numbers behind it</summary>
@@ -45,6 +60,33 @@ function Move({ rec, index }: { rec: Recommendation; index: number }) {
             </dl>
           </details>
         )}
+        <div className="move-actions">
+          {away ? (
+            <>
+              <span className="muted small">
+                {away.state === "done" ? "Marked done" : away.state === "snoozed" ? "Snoozed" : "Set aside"}
+                {away.until ? ` until ${formatDate(away.until)}` : " until it changes"}
+              </span>
+              <button type="button" className="link small" onClick={() => onAct(rec.key, "restore")}>
+                Bring it back
+              </button>
+            </>
+          ) : (
+            (rec.status === "act" || rec.status === "partial") && (
+              <>
+                <button type="button" className="link small" onClick={() => onAct(rec.key, "done")}>
+                  I did this
+                </button>
+                <button type="button" className="link small" onClick={() => onAct(rec.key, "snooze")}>
+                  Remind me in 2 weeks
+                </button>
+                <button type="button" className="link small" onClick={() => onAct(rec.key, "dismiss")}>
+                  Not for me
+                </button>
+              </>
+            )
+          )}
+        </div>
       </div>
       <span className="move-amount">
         {formatMoney(rec.amount, { cents: false })}
@@ -57,17 +99,33 @@ function Move({ rec, index }: { rec: Recommendation; index: number }) {
 export function PlanPage() {
   const plan = useApi<PlanResponse>("/api/plan");
   const retirement = useApi<RetirementResponse>("/api/retirement");
+  const impacts = useApi<MoveImpactsResponse>("/api/plan/impacts");
+  const [showAway, setShowAway] = useState(false);
   const [error, setError] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   if (!plan.data) return plan.error ? <ErrorNote message={plan.error} /> : <Loading />;
   const p = plan.data;
   const { result, basis } = p;
-  const moves = result.recommendations.filter((r) => r.status === "act" || r.status === "partial");
+  const actionable = result.recommendations.filter((r) => r.status === "act" || r.status === "partial");
+  const moves = actionable.filter((r) => !r.userState);
+  const setAside = actionable.filter((r) => r.userState);
+  const impactOf = new Map((impacts.data?.impacts ?? []).map((i) => [i.key, i]));
   const rest = result.recommendations.filter((r) => r.status !== "act" && r.status !== "partial");
 
   const save = async (patch: Record<string, unknown>) => {
     try {
       await api("PUT", "/api/plan/settings", patch);
+      setError(undefined);
+      notifyDataChanged();
+      await plan.reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const actOn = async (key: string, action: MoveAction) => {
+    try {
+      await api("POST", "/api/plan/moves", { key, action });
       setError(undefined);
       notifyDataChanged();
       await plan.reload();
@@ -146,9 +204,24 @@ export function PlanPage() {
           <h2 className="section-title">This month</h2>
           <ol className="moves">
             {moves.map((r, i) => (
-              <Move key={`${r.step}-${r.subject?.id ?? 0}`} rec={r} index={i + 1} />
+              <Move key={r.key} rec={r} index={i + 1} impact={impactOf.get(r.key)} onAct={(k, a) => void actOn(k, a)} />
             ))}
           </ol>
+        </section>
+      )}
+      {moves.length === 0 && setAside.length > 0 && <p className="muted">Everything left is set aside for now.</p>}
+      {setAside.length > 0 && (
+        <section>
+          <button type="button" className="link small" onClick={() => setShowAway(!showAway)}>
+            {showAway ? "Hide" : "Show"} {setAside.length} set aside
+          </button>
+          {showAway && (
+            <ol className="moves">
+              {setAside.map((r, i) => (
+                <Move key={r.key} rec={r} index={i + 1} impact={impactOf.get(r.key)} onAct={(k, a) => void actOn(k, a)} />
+              ))}
+            </ol>
+          )}
         </section>
       )}
 
@@ -223,6 +296,7 @@ function PlanSettingsPanel({
   const [apr, setApr] = useState<number | null>(s.highInterestApr);
   const [months, setMonths] = useState<number | null>(s.emergencyMonths);
   const [override, setOverride] = useState<number | null>(s.availableOverride);
+  const [taxPct, setTaxPct] = useState<number | null>(s.marginalTaxPct);
 
   const move = (i: number, delta: -1 | 1) => {
     const next = [...steps];
@@ -282,6 +356,11 @@ function PlanSettingsPanel({
         <Field label="Amount to allocate each month" hint="Blank = work it out from your budget">
           <span onBlur={() => override !== s.availableOverride && void onSave({ availableOverride: override })}>
             <MoneyInput value={override} onChange={setOverride} placeholder="Automatic" ariaLabel="Amount to allocate each month" />
+          </span>
+        </Field>
+        <Field label="Your marginal tax rate" hint="Optional. Lets pre-tax 401(k) steps show their smaller take-home cost. Blank = treat them as take-home dollars.">
+          <span onBlur={() => taxPct !== s.marginalTaxPct && void onSave({ marginalTaxPct: taxPct })}>
+            <NumberInput value={taxPct} onChange={setTaxPct} min={0} max={60} step={1} suffix="%" ariaLabel="Marginal tax rate" />
           </span>
         </Field>
       </div>

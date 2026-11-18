@@ -5,7 +5,7 @@ import { addDays, parseIsoDate, type IsoDate } from "../engine/dates.ts";
 import { compareStrategies, type Debt } from "../engine/plan/debt.ts";
 import { emergencyMonthsDefault, goalProgress } from "../engine/plan/goals.ts";
 import { limitsFor, type ContributionLimits } from "../engine/plan/limits.ts";
-import { DEFAULT_STEPS, STEP_IDS, runWaterfall, type PlanDebt, type StepId } from "../engine/plan/waterfall.ts";
+import { DEFAULT_STEPS, STEP_IDS, runWaterfall, type PlanDebt, type Recommendation, type StepId } from "../engine/plan/waterfall.ts";
 import type { AccountView, DebtsResponse, GoalView, PlanResponse, PlanSettings, PlanAlert } from "../shared/api.ts";
 import {
   debtQuerySchema,
@@ -22,6 +22,7 @@ import { getBudgetSettings, loadActuals, loadBudgetCategories, today } from "./b
 import { getSetting, setSetting, type Db } from "./db.ts";
 import { getHousehold, getPeople } from "./household.ts";
 import { badRequest, idParam, notFound, parse } from "./http.ts";
+import { applyMoveStates, registerMoveRoutes } from "./moves.ts";
 
 // ---------- Contribution limits ----------
 
@@ -44,6 +45,7 @@ const DEFAULT_SETTINGS: PlanSettings = {
   highInterestApr: 7,
   emergencyMonths: null,
   availableOverride: null,
+  marginalTaxPct: null,
 };
 
 export function getPlanSettings(db: Db): PlanSettings {
@@ -277,6 +279,58 @@ function portfolioAlerts(db: Db): PlanAlert[] {
   return out;
 }
 
+// ---------- Contributions and current flows ----------
+
+const RETIREMENT_TYPES = "'ira', 'roth_ira', '401k', '403b'";
+
+/**
+ * Money that really went into these accounts in [since, until): not income-type
+ * rows (interest, dividends) and not moves from another retirement account
+ * (rollovers, Roth conversions), which are not new contributions.
+ */
+function contributionsSince(db: Db, since: IsoDate, types: string[], until?: IsoDate): { type: string; owner: number | null; total: number }[] {
+  return db
+    .prepare(
+      `SELECT a.type, a.owner_person_id AS owner, COALESCE(SUM(t.amount), 0) AS total
+       FROM transactions t
+       JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN categories c ON c.id = t.category_id
+       LEFT JOIN transactions pt ON pt.id = t.transfer_id
+       LEFT JOIN accounts pa ON pa.id = pt.account_id
+       WHERE t.status = 'posted' AND t.amount > 0 AND t.date >= ? AND (? IS NULL OR t.date < ?)
+         AND a.type IN (${types.map((x) => `'${x}'`).join(", ")})
+         AND COALESCE(c.budget_type, '') <> 'income'
+         AND COALESCE(pa.type, '') NOT IN (${RETIREMENT_TYPES})
+       GROUP BY a.type, a.owner_person_id`,
+    )
+    .all(since, until ?? null, until ?? null) as { type: string; owner: number | null; total: number }[];
+}
+
+/**
+ * Savings already flow out of checking each month, and the available amount
+ * includes them. Note the recent monthly average on the IRA, HSA and taxable
+ * steps so the user sees what to change, not just a total.
+ */
+function annotateAlreadyMoving(db: Db, now: IsoDate, people: ReturnType<typeof getPeople>, recs: Recommendation[]): void {
+  const months = recentCompleteMonths(db, now);
+  if (months.length === 0) return;
+  const rows = contributionsSince(db, firstDay(months[0]!), ["ira", "roth_ira", "hsa", "brokerage"], firstDay(nextMonth(months.at(-1)!)));
+  const perMonth = (pick: (r: (typeof rows)[number]) => boolean) => Math.round(rows.filter(pick).reduce((s, r) => s + r.total, 0) / months.length);
+  const usd = (c: number) => `$${Math.round(c / 100).toLocaleString("en-US")}`;
+  for (const r of recs) {
+    let moving = 0;
+    if (r.step === "ira" && r.subject?.kind === "person") {
+      const id = r.subject.id;
+      moving = perMonth((x) => (x.type === "ira" || x.type === "roth_ira") && (x.owner === id || (people.length === 1 && x.owner === null)));
+    } else if (r.step === "hsa") moving = perMonth((x) => x.type === "hsa");
+    else if (r.step === "taxable") moving = perMonth((x) => x.type === "brokerage");
+    if (moving <= 0) continue;
+    r.alreadyMoving = moving;
+    r.facts.push({ label: "Already moving per month (recent average)", value: moving, kind: "money" });
+    if (r.action) r.action += ` You already move about ${usd(moving)}/mo here, so ${r.amount > moving ? `that's about ${usd(r.amount - moving)} more` : "keep it up"}.`;
+  }
+}
+
 // ---------- The plan ----------
 
 function yearStart(now: IsoDate): IsoDate {
@@ -302,16 +356,13 @@ export function buildPlan(db: Db): PlanResponse {
   const available = settings.availableOverride ?? computed;
 
   // Contributions so far this calendar year.
-  const deposits = db
-    .prepare(
-      `SELECT a.type, a.owner_person_id AS owner, COALESCE(SUM(t.amount), 0) AS total
-       FROM transactions t JOIN accounts a ON a.id = t.account_id
-       WHERE t.status = 'posted' AND t.amount > 0 AND t.date >= ? AND a.type IN ('ira', 'roth_ira', 'hsa')
-       GROUP BY a.type, a.owner_person_id`,
-    )
-    .all(yearStart(now)) as { type: string; owner: number | null; total: number }[];
+  const deposits = contributionsSince(db, yearStart(now), ["ira", "roth_ira", "hsa"]);
   const hsaDeposits = deposits.filter((d) => d.type === "hsa").reduce((s, d) => s + d.total, 0);
   const hsaPayroll = people.reduce((s, p) => s + p.employerPlan.hsaPayrollAnnual, 0);
+  // Deposits so far plus the payroll still to come. If payroll deposits aren't imported the first
+  // term misses them, so never project less than a full year of payroll.
+  const monthsLeft = 12 - (parseIsoDate(now).month - 1);
+  const hsaProjected = Math.max(hsaDeposits + Math.round((hsaPayroll * monthsLeft) / 12), hsaPayroll);
 
   const debts = debtInputs(accounts);
   for (const d of debts) {
@@ -324,13 +375,18 @@ export function buildPlan(db: Db): PlanResponse {
     limits: limitsChoice.limits,
     limitsExact: limitsChoice.exact,
     steps: settings.steps,
-    params: { starterAmount: settings.starterAmount, highInterestApr: settings.highInterestApr, emergencyMonths: ctx.emergencyMonths },
+    params: {
+      starterAmount: settings.starterAmount,
+      highInterestApr: settings.highInterestApr,
+      emergencyMonths: ctx.emergencyMonths,
+      ...(settings.marginalTaxPct !== null ? { marginalTaxPct: settings.marginalTaxPct } : {}),
+    },
     available,
     essentialMonthly: baseline.essential,
     emergencySaved: ctx.emergencySaved,
     filingStatus: household.filingStatus,
     hsaCoverage: household.hsaCoverage,
-    hsaProjected: hsaDeposits + hsaPayroll,
+    hsaProjected,
     people: people.map((p) => ({
       id: p.id,
       name: p.name,
@@ -354,6 +410,9 @@ export function buildPlan(db: Db): PlanResponse {
     })),
     hasTaxableAccount: accounts.some((a) => a.type === "brokerage"),
   });
+
+  annotateAlreadyMoving(db, now, people, result.recommendations);
+  applyMoveStates(db, now, result.recommendations);
 
   return {
     result,
@@ -476,6 +535,7 @@ export function debtsView(db: Db, extraOverride?: number): DebtsResponse {
 
 export function registerPlanRoutes(app: FastifyInstance, db: Db): void {
   app.get("/api/plan", async () => buildPlan(db));
+  registerMoveRoutes(app, db, buildPlan);
 
   app.put("/api/plan/settings", async (request) => {
     const patch = parse(planSettingsSchema, request.body);
@@ -494,6 +554,7 @@ export function registerPlanRoutes(app: FastifyInstance, db: Db): void {
       highInterestApr: patch.highInterestApr ?? current.highInterestApr,
       emergencyMonths: patch.emergencyMonths === undefined ? current.emergencyMonths : patch.emergencyMonths,
       availableOverride: patch.availableOverride === undefined ? current.availableOverride : patch.availableOverride,
+      marginalTaxPct: patch.marginalTaxPct === undefined ? current.marginalTaxPct : patch.marginalTaxPct,
     });
     return buildPlan(db);
   });

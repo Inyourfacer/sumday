@@ -46,6 +46,12 @@ export interface SimPerson {
 
 export interface SimInput {
   startYear: number;
+  /**
+   * Share of `startYear` still to come (0–1, default 1). Balances already
+   * include this year's activity so far, so the first simulated year only
+   * adds the remaining contributions, spending and growth.
+   */
+  yearFraction?: number;
   /** Last year simulated (inclusive). */
   endYear: number;
   people: SimPerson[];
@@ -188,6 +194,8 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     const h = input.history[years[t]!]!;
     const infl1 = 1 + h.inflation;
     cumInfl *= infl1;
+    // Only the rest of the current year is simulated in year 0.
+    const f = t === 0 ? Math.min(1, Math.max(0, input.yearFraction ?? 1)) : 1;
     if (depletedAt !== null) {
       totals[t] = 0;
       continue;
@@ -202,19 +210,19 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       const income = pay[k]!;
       if (income > 0 && year - p.birthYear < p.retirementAge) {
         anyoneWorking = true;
-        trad[k] = trad[k]! + income * (p.pretaxPct / 100) + income * matchShare[k]!;
-        roth += income * (p.rothPct / 100);
-        hsa += p.hsaPayroll;
+        trad[k] = trad[k]! + f * (income * (p.pretaxPct / 100) + income * matchShare[k]!);
+        roth += f * income * (p.rothPct / 100);
+        hsa += f * p.hsaPayroll;
         // Next year's pay: the raise, less this year's inflation.
         pay[k] = income * ((1 + p.raisePct / 100) / infl1);
       }
     }
     if (anyoneWorking) {
-      taxable += extra.taxable;
-      basisNominal += extra.taxable * cumInfl;
-      roth += extra.roth;
-      hsa += extra.hsa;
-      for (let k = 0; k < n; k++) trad[k] = trad[k]! + extraTrad[k]!;
+      taxable += f * extra.taxable;
+      basisNominal += f * extra.taxable * cumInfl;
+      roth += f * extra.roth;
+      hsa += f * extra.hsa;
+      for (let k = 0; k < n; k++) trad[k] = trad[k]! + f * extraTrad[k]!;
     }
 
     // One-time amounts this year.
@@ -230,12 +238,12 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
 
     // Retirement: withdraw what income doesn't cover.
     if (year >= retireYear) {
-      let need = input.spending[t] ?? 0;
+      let need = f * (input.spending[t] ?? 0);
       for (let k = 0; k < n; k++) {
         const p = people[k]!;
         const age = year - p.birthYear;
-        if (p.socialSecurity !== null && age >= p.claimAge) need -= p.socialSecurity * 12;
-        if (p.pension && age >= p.pension.startAge) need -= (p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+        if (p.socialSecurity !== null && age >= p.claimAge) need -= f * p.socialSecurity * 12;
+        if (p.pension && age >= p.pension.startAge) need -= (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
       }
 
       // Required minimums come out whether needed or not; any extra is reinvested.
@@ -243,7 +251,7 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
         const p = people[k]!;
         const age = year - p.birthYear;
         if (age < p.rmdStartAge || trad[k]! <= 0) continue;
-        const rmd = Math.min(trad[k]!, requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
+        const rmd = Math.min(trad[k]!, f * requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
         if (rmd <= 0) continue;
         trad[k] = trad[k]! - (rmd);
         const net = rmd * (1 - ord);
@@ -264,7 +272,7 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     }
 
     // Growth for the year.
-    const g = 1 + growth;
+    const g = f === 1 ? 1 + growth : (1 + growth) ** f;
     taxable *= g;
     roth *= g;
     hsa *= g;

@@ -79,6 +79,11 @@ export interface WaterfallInput {
     /** APR (%) at or above which debt counts as high-interest. */
     highInterestApr: number;
     emergencyMonths: number;
+    /**
+     * Marginal income-tax rate (%) used to turn a pre-tax payroll contribution
+     * into the smaller drop in take-home pay. 0 / absent = treat gross as net.
+     */
+    marginalTaxPct?: number;
   };
   /** Money available to allocate each month; null when it can't be worked out yet. */
   available: Cents | null;
@@ -111,8 +116,21 @@ export interface Recommendation {
   status: StepStatus;
   /** What to do, in plain words. Empty when there's nothing to do. */
   action: string;
-  /** Monthly amount this step takes. */
+  /** Monthly take-home cash this step takes. */
   amount: Cents;
+  /**
+   * Monthly amount that lands in the account when that differs from `amount`
+   * (a pre-tax payroll contribution is bigger than the pay it costs).
+   */
+  contribution?: Cents;
+  /** Monthly amount already moving to this destination (recent average), when known. */
+  alreadyMoving?: Cents;
+  /** Stable id of this move, for remembering what the user did with it. */
+  key: string;
+  /** The date by which acting still counts (filing deadline, promo end, goal date), when there is one. */
+  deadline?: { date: IsoDate; label: string };
+  /** What the user did with this move, if anything. Set by the server; never read by the engine. */
+  userState?: { state: "done" | "snoozed" | "dismissed"; until: IsoDate | null };
   /** Which person or debt or goal this is about, if any. */
   subject?: { kind: "person" | "debt" | "goal"; id: number; name: string };
   why: string;
@@ -159,6 +177,50 @@ export function fullMatchPct(tiers: PlanPerson["plan"]["matchTiers"]): number {
 }
 
 /** Round a contribution % down to the nearest half percent (what payroll systems accept). */
+/** IRA and HSA money for a year can be added until the filing deadline (mid-April of the next year). */
+export const CONTRIBUTION_GRACE_MONTHS = 3;
+
+/** Months over which to spread a yearly room: the rest of the year plus the filing-deadline grace. */
+export function pacingMonths(monthsLeftInYear: number): number {
+  return monthsLeftInYear + CONTRIBUTION_GRACE_MONTHS;
+}
+
+/** Share of a pre-tax payroll dollar that comes out of take-home pay (Roth-only plans: all of it). */
+export function takeHomeFactor(p: Pick<PlanPerson, "plan">, marginalTaxPct: number): number {
+  if (p.plan.rothPct > 0 && p.plan.pretaxPct === 0) return 1;
+  return 1 - Math.min(60, Math.max(0, marginalTaxPct)) / 100;
+}
+
+/** A move's identity: its step plus the person, debt or goal it is about. */
+export function moveKey(r: Pick<Recommendation, "step" | "subject">): string {
+  return r.subject ? `${r.step}:${r.subject.kind}:${r.subject.id}` : r.step;
+}
+
+/** The date after which a move stops counting (or gets more expensive), when there is one. */
+function deadlineFor(r: Recommendation, year: number, input: WaterfallInput): Recommendation["deadline"] {
+  if (r.status === "done" || r.status === "disabled" || r.status === "not_applicable") return undefined;
+  switch (r.step) {
+    case "ira":
+    case "hsa":
+      // This year's IRA and HSA money can be added until the filing deadline.
+      return { date: `${year + 1}-04-15`, label: "Counts for this year until Apr 15" };
+    case "employer_match":
+    case "max_workplace":
+      return { date: `${year}-12-31`, label: "Payroll changes must start before year end" };
+    case "high_interest_debt":
+    case "low_interest_debt": {
+      const d = input.debts.find((x) => x.id === r.subject?.id);
+      return d?.promoEnds && d.promoEnds >= input.today ? { date: d.promoEnds, label: "Intro rate ends" } : undefined;
+    }
+    case "goals": {
+      const g = input.goals.find((x) => x.id === r.subject?.id);
+      return g?.targetDate ? { date: g.targetDate, label: "Goal date" } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 function halfPctDown(p: number): number {
   return Math.floor(p * 2 + 1e-9) / 2;
 }
@@ -176,8 +238,8 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
   // Emergency fund money given out by the starter step, so the full step doesn't count it twice.
   let emergencyThisMonth = 0;
 
-  const push = (order: number, step: StepId, rec: Omit<Recommendation, "order" | "step" | "title"> & { title?: string }) => {
-    recs.push({ order, step, title: rec.title ?? STEP_TITLES[step], ...rec });
+  const push = (order: number, step: StepId, rec: Omit<Recommendation, "order" | "step" | "title" | "key"> & { title?: string }) => {
+    recs.push({ order, step, title: rec.title ?? STEP_TITLES[step], key: "", ...rec });
   };
   /** Take up to `need` from what's left; returns what was taken and the status. */
   const take = (need: Cents): { amount: Cents; status: StepStatus } => {
@@ -247,9 +309,12 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             push(order, s.id, { subject, status: "not_applicable", action: "", amount: 0, why: `Add ${p.name}'s income to work out the match.`, facts: [] });
             continue;
           }
-          const cost = multiplyCents(income, Math.max(0, full - current) / 1200);
-          const t = take(cost);
-          const newPct = t.status === "act" ? full : current + halfPctDown((t.amount * 1200) / income);
+          const factor = takeHomeFactor(p, params.marginalTaxPct ?? 0);
+          // Contribution needed (gross, into the plan) and what it costs in take-home pay.
+          const grossCost = multiplyCents(income, Math.max(0, full - current) / 1200);
+          const t = take(Math.round(grossCost * factor));
+          const grossPut = Math.round(t.amount / factor);
+          const newPct = t.status === "act" ? full : current + halfPctDown((grossPut * 1200) / income);
           if (t.amount > 0) contribPct.set(p.id, newPct);
           const gained = matchValue(income, p.plan.matchTiers, newPct) - matchValue(income, p.plan.matchTiers, current);
           push(order, s.id, {
@@ -263,6 +328,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
                   ? `Raise ${p.name}'s ${p.plan.type} contribution from ${pct(current)} to ${pct(newPct)} of pay.`
                   : `${p.name} is ${pct(full - current)} short of the full match.`,
             amount: t.amount,
+            contribution: grossPut,
             why:
               t.status === "done"
                 ? `${p.name} already contributes ${pct(current)}, enough for the full match (${pct(full)}).`
@@ -346,7 +412,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
         const oldest = Math.max(...input.people.map((p) => p.ageAtYearEnd ?? 0));
         const limit = hsaLimit(limits, input.hsaCoverage, oldest || null);
         const room = Math.max(0, limit - input.hsaProjected);
-        const t = take(Math.ceil(room / monthsLeft));
+        const t = take(Math.ceil(room / pacingMonths(monthsLeft)));
         push(order, s.id, {
           status: t.status,
           action: t.status === "done" ? "" : t.amount > 0 ? `Add ${usd(t.amount)}/mo to your HSA.` : `There's ${usd(room)} of HSA room left this year.`,
@@ -359,7 +425,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             money(`${limits.year} limit (${input.hsaCoverage})`, limit),
             money("This year so far + payroll", input.hsaProjected),
             money("Room left", room),
-            months("Months left this year", monthsLeft),
+            months("Months to spread it over (to the April deadline)", pacingMonths(monthsLeft)),
           ],
         });
         return;
@@ -374,7 +440,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
         for (const p of input.people) {
           const limit = iraLimit(limits, p.ageAtYearEnd);
           const room = Math.max(0, limit - p.iraYtd);
-          const t = take(Math.ceil(room / monthsLeft));
+          const t = take(Math.ceil(room / pacingMonths(monthsLeft)));
           const magi = input.filingStatus === "married_joint" ? household : (p.income ?? 0);
           const [lo, hi] = limits.rothIraPhaseOut[input.filingStatus];
           const kind = magi < lo ? "Roth IRA" : magi < hi ? "Roth IRA (partly: your income is in the phase-out range)" : "backdoor Roth IRA";
@@ -399,7 +465,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
               money(`${limits.year} limit`, limit),
               money("Contributed this year", p.iraYtd),
               money("Room left", room),
-              months("Months left this year", monthsLeft),
+              months("Months to spread it over (to the April deadline)", pacingMonths(monthsLeft)),
               money("Income used for the Roth check", magi),
               text("Roth phase-out", `${usd(lo)}–${usd(hi)}`),
             ],
@@ -425,8 +491,10 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
           const current = contribPct.get(p.id)!;
           const projected = multiplyCents(income, current / 100);
           const room = Math.max(0, limit - projected);
-          const t = take(Math.ceil(room / 12));
-          const newPct = Math.min((limit / income) * 100, current + halfPctDown((t.amount * 1200) / income));
+          const factor = takeHomeFactor(p, params.marginalTaxPct ?? 0);
+          const t = take(Math.ceil((room / 12) * factor));
+          const grossPut = Math.round(t.amount / factor);
+          const newPct = Math.min((limit / income) * 100, current + halfPctDown((grossPut * 1200) / income));
           if (t.amount > 0) contribPct.set(p.id, newPct);
           push(order, s.id, {
             subject,
@@ -436,9 +504,10 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
               t.status === "done"
                 ? ""
                 : t.amount > 0
-                  ? `Raise ${p.name}'s ${p.plan.type} to ${pct(newPct)} of pay (about ${usd(t.amount)}/mo more).`
+                  ? `Raise ${p.name}'s ${p.plan.type} to ${pct(newPct)} of pay (about ${usd(grossPut)}/mo more into the plan).`
                   : `${p.name}'s ${p.plan.type} has ${usd(room)} of yearly room left.`,
             amount: t.amount,
+            contribution: grossPut,
             why:
               t.status === "done"
                 ? `${p.name}'s contributions reach the ${usd(limit)} limit.`
@@ -520,6 +589,13 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
       }
     }
   });
+
+  const year = parseIsoDate(today).year;
+  for (const r of recs) {
+    r.key = moveKey(r);
+    const dl = deadlineFor(r, year, input);
+    if (dl) r.deadline = dl;
+  }
 
   const available = unknownAvailable ? null : (input.available as Cents);
   const allocated = recs.reduce((s, r) => s + r.amount, 0);

@@ -5,6 +5,7 @@ import type { HealthResponse, SummaryResponse } from "../shared/api.ts";
 import { registerAccountRoutes } from "./accounts.ts";
 import { registerBudgetRoutes } from "./budget.ts";
 import { registerPlanRoutes } from "./plan.ts";
+import { registerMoveImpactRoutes } from "./moveImpact.ts";
 import { registerInvestmentRoutes } from "./investments.ts";
 import { registerRetirementRoutes } from "./retirement.ts";
 import { registerScenarioRoutes } from "./scenarios.ts";
@@ -72,6 +73,7 @@ export async function buildApp({ db, webDir, logger = false, priceProvider, back
   registerPlanRoutes(app, db);
   registerInvestmentRoutes(app, db, prices);
   registerRetirementRoutes(app, db);
+  registerMoveImpactRoutes(app, db);
   registerScenarioRoutes(app, db);
   registerAlertRoutes(app, db);
   registerReportRoutes(app, db);

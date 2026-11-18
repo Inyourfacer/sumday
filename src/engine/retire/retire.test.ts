@@ -128,6 +128,18 @@ describe("simulation mechanics (constant 5% returns, no inflation)", () => {
     expect(r.bands[5]!.p10).toBe(r.bands[5]!.p90);
   });
 
+  it("simulates only the rest of the first year", () => {
+    const worker = retiree({ birthYear: 1990, income: 10_000_000, pretaxPct: 10 });
+    const balances = { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: 50_000_000 } };
+    const whole = simulate(input({ people: [worker], balances }));
+    const part = simulate(input({ people: [worker], balances, yearFraction: 0.25 }));
+    // Full year: ($500k + $10k) × 1.05. A quarter year: ($500k + $2.5k) × 1.05^0.25.
+    expect(whole.bands[0]!.p50).toBe(Math.round(51_000_000 * 1.05));
+    expect(part.bands[0]!.p50).toBe(Math.round(50_250_000 * 1.05 ** 0.25));
+    // Later years are unchanged in length: the second year is a full year for both.
+    expect(part.bands[1]!.p50).toBe(Math.round((part.bands[0]!.p50 + 1_000_000) * 1.05));
+  });
+
   it("fails when the money runs out, and says when", () => {
     const r = simulate(input({ spending: Array(30).fill(10_000_000), taxes: { ordinaryPct: 0, capitalGainsPct: 0 } }));
     expect(r.successRate).toBe(0);

@@ -328,6 +328,8 @@ export const planSettingsSchema = z.object({
   emergencyMonths: z.number().min(1).max(24).nullable().optional(),
   /** Override the monthly amount to allocate. null = work it out from the budget. */
   availableOverride: cents.refine((v) => v >= 0, "Can't be negative.").nullable().optional(),
+  /** Marginal income-tax rate (%), so pre-tax payroll steps are priced at their take-home cost. null = not set. */
+  marginalTaxPct: z.number().min(0).max(60).nullable().optional(),
 });
 export const debtQuerySchema = z.object({
   extra: z.coerce.number().int().min(0).max(100_000_000).optional(),
@@ -456,6 +458,13 @@ export const alertSettingsSchema = z.object({
   desktop: z.boolean().optional(),
 });
 export const alertDismissSchema = z.object({ key: z.string().min(1).max(500) });
+
+export const moveActionSchema = z.object({
+  key: z.string().min(1).max(200),
+  action: z.enum(["done", "snooze", "dismiss", "restore"]),
+  /** Snooze length in days. */
+  days: z.number().int().min(1).max(365).optional(),
+});
 
 export const reportMonthSchema = z.object({ month: monthKey });
 

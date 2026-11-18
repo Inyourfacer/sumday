@@ -15,6 +15,7 @@ import { PORTFOLIO_TYPES, getTarget, loadHoldings, toPositions } from "./holding
 import { getHousehold, getPeople } from "./household.ts";
 import { parse } from "./http.ts";
 import { buildPlan, spendingBaseline } from "./plan.ts";
+import type { Recommendation } from "../engine/plan/waterfall.ts";
 
 const RETURNS = JSON.parse(readFileSync(new URL("../../data/returns/us-annual.json", import.meta.url), "utf8")) as {
   source: string;
@@ -48,6 +49,48 @@ const DEFAULTS: StoredSettings = {
 export function getSettings(db: Db): StoredSettings {
   const stored = getSetting<Partial<StoredSettings>>(db, "retirement") ?? {};
   return { ...DEFAULTS, ...stored, spending: { ...DEFAULTS.spending, ...stored.spending } };
+}
+
+/** Share of the calendar year still to come, counting today (Jan 1 = 1, Dec 31 = 1/365). */
+export function shareOfYearLeft(now: string): number {
+  const { year, month, day } = parseIsoDate(now);
+  const start = Date.UTC(year, 0, 1);
+  const length = (Date.UTC(year + 1, 0, 1) - start) / 86_400_000;
+  const elapsed = (Date.UTC(year, month - 1, day) - start) / 86_400_000;
+  return (length - elapsed) / length;
+}
+
+export type ExtraSavings = SimInput["extraSavings"];
+
+export function emptySavings(): ExtraSavings {
+  return { taxable: 0, roth: 0, hsa: 0, traditional: {} };
+}
+
+/** Yearly money one recommendation puts into each kind of account. */
+export function savingsOf(r: Recommendation): ExtraSavings {
+  const out = emptySavings();
+  if (r.amount <= 0) return out;
+  // What lands in the account: a pre-tax payroll step costs less take-home pay than it deposits.
+  const yearly = (r.contribution ?? r.amount) * 12;
+  if (r.step === "ira") out.roth = yearly;
+  else if (r.step === "taxable") out.taxable = yearly;
+  else if (r.step === "hsa") out.hsa = yearly;
+  else if ((r.step === "max_workplace" || r.step === "employer_match") && r.subject?.kind === "person") {
+    out.traditional[r.subject.id] = yearly;
+    // The employer match earned by raising the contribution is part of the plan's value too.
+    if (r.step === "employer_match") {
+      const match = r.facts.find((f) => f.label === "Extra employer money per year");
+      if (match && typeof match.value === "number") out.traditional[r.subject.id]! += match.value;
+    }
+  }
+  return out;
+}
+
+export function addSavings(into: ExtraSavings, add: ExtraSavings, sign = 1): void {
+  into.taxable += sign * add.taxable;
+  into.roth += sign * add.roth;
+  into.hsa += sign * add.hsa;
+  for (const [id, v] of Object.entries(add.traditional)) into.traditional[Number(id)] = (into.traditional[Number(id)] ?? 0) + sign * v;
 }
 
 export interface Built {
@@ -116,18 +159,9 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
   const feePct = fees(toPositions(holdings)).weighted ?? 0;
 
   // Savings the plan recommends each month, while anyone is still working.
-  const extraSavings = { taxable: 0, roth: 0, hsa: 0, traditional: {} as Record<number, number> };
+  const extraSavings = emptySavings();
   if (settings.includePlanSavings) {
-    for (const r of buildPlan(db).result.recommendations) {
-      if (r.amount <= 0) continue;
-      const yearly = r.amount * 12;
-      if (r.step === "ira") extraSavings.roth += yearly;
-      else if (r.step === "taxable") extraSavings.taxable += yearly;
-      else if (r.step === "hsa") extraSavings.hsa += yearly;
-      else if ((r.step === "max_workplace" || r.step === "employer_match") && r.subject?.kind === "person") {
-        extraSavings.traditional[r.subject.id] = (extraSavings.traditional[r.subject.id] ?? 0) + yearly;
-      }
-    }
+    for (const r of buildPlan(db).result.recommendations) addSavings(extraSavings, savingsOf(r));
   }
 
   // Retirement spending from today's budget.
@@ -153,6 +187,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
 
   const raw: SimInput = {
     startYear,
+    yearFraction: shareOfYearLeft(now),
     endYear,
     people: simPeople,
     balances,

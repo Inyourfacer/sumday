@@ -2295,3 +2295,6 @@ table.compare .badge {
     text-decoration: none;
   }
 }
+
+.move-actions { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; margin-top: 0.4rem; }
+.move-impact { margin: 0.25rem 0 0; }

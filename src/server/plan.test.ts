@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextMonth } from "../engine/budget/budget.ts";
-import type { AccountView, BudgetResponse, CategoryView, DebtsResponse, GoalView, PlanResponse, Recommendation } from "../shared/api.ts";
+import type { AccountView, BudgetResponse, CategoryView, DebtsResponse, GoalView, MoveImpactsResponse, PlanResponse, Recommendation } from "../shared/api.ts";
 import { buildApp } from "./app.ts";
 import { openDb, type Db } from "./db.ts";
 
@@ -194,5 +194,50 @@ describe("partial updates keep other fields", () => {
     const groceries = cats.get("Groceries")!;
     const renamed = await ok<CategoryView>("PATCH", `/api/categories/${groceries.id}`, { name: "Food at home" });
     expect(renamed).toMatchObject({ name: "Food at home", group: "Food", isEssential: true, budgetType: "flex" });
+  });
+
+  it("counts only real contributions toward the IRA limit", async () => {
+    const alex = (await ok<{ people: { id: number }[] }>("GET", "/api/household")).people[0]!;
+    const roth = await ok<AccountView>("POST", "/api/accounts", { name: "Alex Roth", type: "roth_ira", ownerPersonId: alex.id });
+    const income = [...cats.values()].find((c) => c.budgetType === "income")!;
+    const post = (amount: number, categoryId?: number) =>
+      ok("POST", "/api/transactions", { accountId: roth.id, date: today, amount, payee: "Deposit", ...(categoryId ? { categoryId } : {}) });
+    await post(50_000); // a real contribution
+    await post(12_000, income.id); // dividends are not a contribution
+    const plan = await ok<PlanResponse>("GET", "/api/plan");
+    const ira = steps(plan, "ira").find((r) => r.facts.some((f) => f.label === "Contributed this year"));
+    expect(ira?.facts.find((f) => f.label === "Contributed this year")?.value).toBe(50_000);
+  });
+
+  it("remembers done, snoozed and dismissed moves without changing the plan", async () => {
+    const before = await ok<PlanResponse>("GET", "/api/plan");
+    const move = before.result.recommendations.find((r) => r.status === "act" || r.status === "partial")!;
+    expect(move.key).toBeTruthy();
+    const find = (p: PlanResponse) => p.result.recommendations.find((r) => r.key === move.key)!;
+
+    let plan = await ok<PlanResponse>("POST", "/api/plan/moves", { key: move.key, action: "done" });
+    expect(find(plan).userState?.state).toBe("done");
+    expect(find(plan).amount).toBe(move.amount); // the engine still counts it
+    plan = await ok<PlanResponse>("POST", "/api/plan/moves", { key: move.key, action: "snooze", days: 7 });
+    expect(find(plan).userState).toMatchObject({ state: "snoozed" });
+    plan = await ok<PlanResponse>("POST", "/api/plan/moves", { key: move.key, action: "dismiss" });
+    expect(find(plan).userState).toMatchObject({ state: "dismissed", until: null });
+    // A different decision (more available money) brings a dismissed move back.
+    await ok("PUT", "/api/plan/settings", { availableOverride: 900_000 });
+    const changed = await ok<PlanResponse>("GET", "/api/plan");
+    if (find(changed).amount !== move.amount) expect(find(changed).userState).toBeUndefined();
+    plan = await ok<PlanResponse>("POST", "/api/plan/moves", { key: move.key, action: "restore" });
+    expect(find(plan).userState).toBeUndefined();
+    expect((await call("POST", "/api/plan/moves", { key: "nope", action: "done" })).status).toBe(404);
+  });
+
+  it("sizes what each move does for retirement", async () => {
+    const res = await ok<MoveImpactsResponse>("GET", "/api/plan/impacts");
+    expect(res.available).toBe(true);
+    const match = res.impacts.find((i) => i.key.startsWith("employer_match"));
+    expect(match).toBeDefined();
+    expect(Number.isFinite(match!.successPoints)).toBe(true);
+    // Doing a savings move never lowers the chance the money lasts.
+    expect(res.impacts.every((i) => i.successPoints >= 0 && i.medianAtEnd >= 0)).toBe(true);
   });
 });
