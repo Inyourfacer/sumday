@@ -1,5 +1,5 @@
 import { addDays } from "../../engine/dates.ts";
-import type { AccountView, BudgetResponse, NetWorthResponse, PlanResponse, RecurringResponse, RetirementResponse, SummaryResponse } from "../../shared/api.ts";
+import type { AccountView, BudgetResponse, GoalView, MoveImpactsResponse, NetWorthResponse, PlanResponse, RecurringResponse, RetirementResponse, SummaryResponse } from "../../shared/api.ts";
 import { useApi } from "../api.ts";
 import { AlertsPanel } from "../components/Alerts.tsx";
 import { Meter } from "../components/charts.tsx";
@@ -13,9 +13,15 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
   const networth = useApi<NetWorthResponse>("/api/networth?months=2");
   const recurring = useApi<RecurringResponse>("/api/recurring");
   const plan = useApi<PlanResponse>("/api/plan");
+  const goals = useApi<GoalView[]>("/api/goals");
   const retirement = useApi<RetirementResponse>("/api/retirement");
+  const impacts = useApi<MoveImpactsResponse>("/api/plan/impacts");
   const ret = retirement.data;
-  const moves = (plan.data?.result.recommendations ?? []).filter((r) => r.status === "act" || r.status === "partial");
+  const impactOf = new Map((impacts.data?.impacts ?? []).map((i) => [i.key, i.successPoints]));
+  // Safety steps keep their place; the rest are listed with the biggest effect on retirement first.
+  const SAFETY = new Set(["starter_emergency", "employer_match", "high_interest_debt", "full_emergency"]);
+  const candidates = (plan.data?.result.recommendations ?? []).filter((r) => (r.status === "act" || r.status === "partial") && !r.userState);
+  const moves = [...candidates.filter((r) => SAFETY.has(r.step)), ...candidates.filter((r) => !SAFETY.has(r.step)).sort((a, b) => (impactOf.get(b.key) ?? 0) - (impactOf.get(a.key) ?? 0))];
   const b = budget.data?.budget;
   const bills = (recurring.data?.upcoming ?? []).filter((u) => u.amount < 0 && !u.isTransfer && u.date <= addDays(recurring.data!.today, 7));
   const open = (accounts.data ?? []).filter((a) => !a.isClosed);
@@ -34,6 +40,29 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
       ]
     : [];
   const allDone = steps.length > 0 && steps.every((s) => s.done);
+
+  // One sentence that says where things stand: retirement, then this month's moves.
+  const total = moves.reduce((s, r) => s + r.amount, 0);
+  const headlineParts: string[] = [];
+  if (ret?.ready && ret.result) {
+    // Per hundred, and never rounded up to 100 unless every run lasts: "10 of 10" sounds like a promise.
+    const rate = ret.result.successRate;
+    const outOf100 = rate === 1 ? 100 : Math.min(99, Math.round(rate * 100));
+    headlineParts.push(
+      ret.result.successRate >= ret.settings.successTarget
+        ? `You're on track for retirement: your money lasts in about ${outOf100} of 100 simulated futures.`
+        : `Retirement is below your target: your money lasts in about ${outOf100} of 100 simulated futures.`,
+    );
+  }
+  if (plan.data && plan.data.result.available !== null) {
+    headlineParts.push(
+      moves.length > 0
+        ? `This month ${moves.length === 1 ? "one move" : `${moves.length} moves`} would put ${formatMoney(total, { cents: false })} to work.`
+        : "No moves are waiting this month.",
+    );
+  }
+  const headline = headlineParts.join(" ");
+  const topGoals = (goals.data ?? []).filter((g) => g.progress.status !== "funded").slice(0, 3);
 
   return (
     <>
@@ -67,6 +96,8 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
         </section>
       )}
 
+      {headline && <p className="headline">{headline}</p>}
+
       <AlertsPanel />
 
       {plan.data && (
@@ -84,8 +115,12 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
           ) : (
             <ol className="mini-moves">
               {moves.slice(0, 4).map((r) => (
-                <li key={`${r.step}-${r.subject?.id ?? 0}`}>
-                  <span>{r.action}</span>
+                <li key={r.key}>
+                  <span>
+                    {r.action}
+                    {(impactOf.get(r.key) ?? 0) >= 0.1 && <span className="muted small"> +{impactOf.get(r.key)} pts retirement odds</span>}
+                    {r.deadline && <span className="muted small"> · by {formatDate(r.deadline.date)}</span>}
+                  </span>
                   <strong>{formatMoney(r.amount, { cents: false })}/mo</strong>
                 </li>
               ))}
@@ -150,19 +185,42 @@ export function DashboardPage({ summary }: { summary: SummaryResponse | undefine
             </p>
           )}
         </article>
+        {topGoals.length > 0 && (
+          <article className="card live">
+            <h2>Goals</h2>
+            <ul className="goal-rows">
+              {topGoals.map((g) => (
+                <li key={g.id}>
+                  <span className="goal-top">
+                    <span>{g.name}</span>
+                    <span className="muted small">{Math.round(g.progress.percent * 100)}%</span>
+                  </span>
+                  <Meter used={g.progress.saved} total={g.progress.target} label={`${g.name} funded`} />
+                  {g.progress.status === "overdue" && <span className="status over small">Past its date</span>}
+                </li>
+              ))}
+            </ul>
+            <Link to="/goals">Goals →</Link>
+          </article>
+        )}
         <article className="card live">
           <h2>Retirement</h2>
           {ret?.ready && ret.result ? (
             <>
               <p className="big">{Math.round(ret.result.successRate * 100)}%</p>
               <p className="small">
-                chance your money lasts{" "}
+                chance your money lasts to {ret.inputs ? ret.inputs.endYear : ""}{" "}
                 {ret.result.successRate >= ret.settings.successTarget ? (
                   <span className="status ok">on track</span>
                 ) : (
                   <span className="status over">below {Math.round(ret.settings.successTarget * 100)}% target</span>
                 )}
               </p>
+              {ret.result.medianDepletionYear !== null && ret.inputs && (
+                <p className="small muted">
+                  When it doesn't, it runs out around {ret.result.medianDepletionYear} (as early as {ret.result.earlyDepletionYear} in the worst tenth).
+                </p>
+              )}
               <Link to="/retirement">Projection →</Link>
             </>
           ) : (

@@ -4,7 +4,7 @@
  * accrues interest and gets its minimum; the extra amount, plus the minimums
  * freed up by debts already paid off, goes to the current target.
  */
-import { addMonths, type IsoDate } from "../dates.ts";
+import { addMonths, daysBetween, type IsoDate } from "../dates.ts";
 import { multiplyCents, type Cents } from "../money.ts";
 
 export type Strategy = "avalanche" | "snowball";
@@ -48,6 +48,17 @@ export interface PayoffPlan {
 
 const HORIZON = 600;
 
+/**
+ * The rate a debt really costs over the next year, for ranking: an intro rate
+ * counts only for the part of the year it lasts, so a 0% card whose offer ends
+ * in two months ranks near its full rate and one with a year left ranks near 0.
+ */
+export function effectiveApr(debt: Pick<Debt, "apr" | "promoApr" | "promoEnds">, date: IsoDate): number {
+  if (debt.promoApr == null || debt.promoEnds == null || debt.promoEnds <= date) return debt.apr;
+  const share = Math.min(1, daysBetween(date, debt.promoEnds) / 365);
+  return debt.promoApr * share + debt.apr * (1 - share);
+}
+
 function aprOn(debt: Debt, date: IsoDate): number {
   if (debt.promoApr != null && debt.promoEnds != null && date < debt.promoEnds) return debt.promoApr;
   return debt.apr;
@@ -66,7 +77,7 @@ export function payoffPlan(debts: readonly Debt[], extra: Cents, strategy: Strat
   const paidOff = new Map<number, number>();
   // Target order is fixed at the start: by rate for avalanche, by starting balance for snowball.
   const targets = order(
-    live.map((d) => ({ id: d.id, balance: d.balance, apr: d.apr })),
+    live.map((d) => ({ id: d.id, balance: d.balance, apr: effectiveApr(d, start) })),
     strategy,
   );
   const growing = live

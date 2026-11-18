@@ -22,6 +22,20 @@ export interface PlanSettings {
   /** null = 3 months with two earners, 6 with one. */
   emergencyMonths: number | null;
   availableOverride: number | null;
+  /** Marginal income-tax rate (%). null = treat pre-tax payroll dollars as take-home dollars. */
+  marginalTaxPct: number | null;
+}
+
+/** What each move would become under a different step order. */
+export interface PlanPreviewResponse {
+  changes: { key: string; step: StepId; title: string; before: number; after: number }[];
+}
+
+/** What each move is worth to retirement (see server/moveImpact.ts). */
+export interface MoveImpactsResponse {
+  available: boolean;
+  runs?: number;
+  impacts: { key: string; successPoints: number; medianAtEnd: number }[];
 }
 
 export interface PlanAlert {
@@ -42,6 +56,8 @@ export interface PlanResponse {
     /** expectedIncome − fixed − nonMonthly − flex, or null without expected income. */
     computed: number | null;
     override: number | null;
+    /** The usual swing in `computed` (25th–75th percentile of Flex spending over up to 12 months); null with under 4 months of data. */
+    range: { low: number; high: number; months: number } | null;
     /** Complete months the averages use. */
     averagedMonths: string[];
     essentialMonthly: number;
@@ -122,7 +138,7 @@ export interface InvestmentsResponse {
   rebalance: {
     needed: boolean;
     trades: { where: "tax_advantaged" | "taxable"; sell: AssetClassId; buy: AssetClassId; amount: number }[];
-    taxableSales: { holdingId: number; label: string; accountName: string; amount: number; estimatedGain: number | null }[];
+    taxableSales: { holdingId: number; label: string; accountName: string; amount: number; estimatedGain: number | null; washSaleWarning?: string }[];
     remaining: { assetClass: AssetClassId; amount: number }[];
   };
   locationHints: { kind: string; amount: number; message: string }[];
@@ -133,7 +149,7 @@ export interface InvestmentsResponse {
     yearly: number;
     drag10: number;
     drag30: number;
-    expensive: { holdingId: number; label: string; accountName: string; expenseRatio: number; value: number }[];
+    expensive: { holdingId: number; label: string; accountName: string; expenseRatio: number; value: number; cheaperHeld?: { label: string; expenseRatio: number } }[];
   };
   prices: { provider: string; configured: boolean; latest: string | null; errors: { label: string; message: string }[] };
 }
@@ -154,16 +170,66 @@ export interface HoldingsImportResult {
   value: number;
 }
 
+/** "Try a change" (POST /api/retirement/explore). */
+export type ExploreResponse =
+  | { ready: false }
+  | {
+      ready: true;
+      runs: number;
+      /** The plan as it stands, from the same runs, so the difference is clean. */
+      base: { successRate: number };
+      changed: {
+        successRate: number;
+        successInterval: [number, number];
+        retireYear: number;
+        medianAtRetirement: number;
+        medianAtEnd: number;
+        bands: import("../engine/retire/montecarlo.ts").YearBand[];
+      };
+    };
+
+export interface AssumptionRow {
+  area: string;
+  label: string;
+  value: string;
+  /** you = entered by you; default = Sumday's starting value; estimated = worked out from your data; guess = inferred; missing = needed but empty. */
+  source: "you" | "default" | "estimated" | "guess" | "missing";
+  note?: string | undefined;
+  link: string;
+}
+
+export interface AssumptionsResponse {
+  rows: AssumptionRow[];
+  /** How far the chance of success moves, in points, when one lever changes. Biggest effect first. */
+  sensitivity: { label: string; successPoints: number }[];
+}
+
+/** Success by Social Security claim age, per person (GET /api/retirement/claiming). */
+export interface ClaimingResponse {
+  ready: boolean;
+  people: {
+    id: number;
+    name: string;
+    /** The claim age in the plan today. */
+    planned: number;
+    options: { age: number; monthly: number; successRate: number; medianAtEnd: number }[];
+  }[];
+}
+
 export interface RetirementResponse {
   ready: boolean;
   /** What's missing before a projection can run. */
   missing: string[];
   settings: {
     successTarget: number;
+    taxMode: "brackets" | "flat";
+    stateTaxPct: number;
     ordinaryTaxPct: number;
     capitalGainsPct: number;
     runs: number;
     blockLength: number;
+    returnHaircutPct: number;
+    allocationSource: "target" | "actual";
     includePlanSavings: boolean;
   };
   inputs: {
@@ -196,7 +262,16 @@ export interface RetirementResponse {
   events: string[];
   result: import("../engine/retire/montecarlo.ts").SimResult | null;
   whatIfs: import("../engine/retire/montecarlo.ts").WhatIfs | null;
-  sources: { returns: string; returnsYears: string; rmd: string };
+  /** The same plan seen two other ways, so one method's quirks don't decide the answer. */
+  checks: {
+    /** Success with a worse future: stock and bond returns lower by `haircutPct` points a year. */
+    stress: { haircutPct: number; successRate: number };
+    /** Success when each real historical start year is lived through in order (no randomness). */
+    replay: { successRate: number; startYears: number };
+    /** Runs behind each what-if answer (the headline uses more). */
+    whatIfRuns: number;
+  } | null;
+  sources: { returns: string; returnsYears: string; rmd: string; tax: string };
 }
 
 export interface ScenarioView {

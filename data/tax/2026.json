@@ -1,0 +1,213 @@
+{
+  "year": 2026,
+  "source": "IRS Rev. Proc. 2025-32 (2026 inflation adjustments) as recalled when this file was written; standard deductions reflect the 2025 tax law changes. Amounts in cents. Verify against irs.gov before relying on it.",
+  "notes": "Brackets and the standard deduction are treated as indexed to inflation, so in the simulation's today's dollars they stay constant. The Social Security taxation thresholds are not indexed by law, so the simulation shrinks them with inflation. Not modeled: the extra deduction for age 65+, the net investment income tax, Medicare surcharges, state rules.",
+  "ssThresholds": {
+    "single": [
+      2500000,
+      3400000
+    ],
+    "head_of_household": [
+      2500000,
+      3400000
+    ],
+    "married_separate": [
+      0,
+      0
+    ],
+    "married_joint": [
+      3200000,
+      4400000
+    ]
+  },
+  "filing": {
+    "single": {
+      "standardDeduction": 1610000,
+      "ordinary": [
+        [
+          1240000,
+          10
+        ],
+        [
+          5040000,
+          12
+        ],
+        [
+          10570000,
+          22
+        ],
+        [
+          20177500,
+          24
+        ],
+        [
+          25622500,
+          32
+        ],
+        [
+          64060000,
+          35
+        ],
+        [
+          null,
+          37
+        ]
+      ],
+      "ltcg": [
+        [
+          4945000,
+          0
+        ],
+        [
+          54550000,
+          15
+        ],
+        [
+          null,
+          20
+        ]
+      ]
+    },
+    "married_joint": {
+      "standardDeduction": 3220000,
+      "ordinary": [
+        [
+          2480000,
+          10
+        ],
+        [
+          10080000,
+          12
+        ],
+        [
+          21140000,
+          22
+        ],
+        [
+          40355000,
+          24
+        ],
+        [
+          51245000,
+          32
+        ],
+        [
+          76870000,
+          35
+        ],
+        [
+          null,
+          37
+        ]
+      ],
+      "ltcg": [
+        [
+          9890000,
+          0
+        ],
+        [
+          61370000,
+          15
+        ],
+        [
+          null,
+          20
+        ]
+      ]
+    },
+    "head_of_household": {
+      "standardDeduction": 2415000,
+      "ordinary": [
+        [
+          1770000,
+          10
+        ],
+        [
+          6745000,
+          12
+        ],
+        [
+          10570000,
+          22
+        ],
+        [
+          20175000,
+          24
+        ],
+        [
+          25620000,
+          32
+        ],
+        [
+          64060000,
+          35
+        ],
+        [
+          null,
+          37
+        ]
+      ],
+      "ltcg": [
+        [
+          6620000,
+          0
+        ],
+        [
+          57960000,
+          15
+        ],
+        [
+          null,
+          20
+        ]
+      ]
+    },
+    "married_separate": {
+      "standardDeduction": 1610000,
+      "ordinary": [
+        [
+          1240000,
+          10
+        ],
+        [
+          5040000,
+          12
+        ],
+        [
+          10570000,
+          22
+        ],
+        [
+          20177500,
+          24
+        ],
+        [
+          25622500,
+          32
+        ],
+        [
+          64060000,
+          35
+        ],
+        [
+          null,
+          37
+        ]
+      ],
+      "ltcg": [
+        [
+          4945000,
+          0
+        ],
+        [
+          54550000,
+          15
+        ],
+        [
+          null,
+          20
+        ]
+      ]
+    }
+  }
+}

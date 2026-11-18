@@ -5,6 +5,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { monthOf } from "../engine/budget/budget.ts";
+import { usualFor, type Usual } from "../engine/budget/outliers.ts";
 import { addDays, daysBetween } from "../engine/dates.ts";
 import { allocation, drift } from "../engine/invest/portfolio.ts";
 import type { AlertKind, AlertSettings, AlertView, AlertsResponse } from "../shared/api.ts";
@@ -131,12 +132,12 @@ export function computeAlerts(db: Db, settings = getAlertSettings(db)): AlertVie
        ORDER BY t.amount`,
     )
     .all(addDays(now, -30), transferCategory) as { id: number; date: string; amount: number; payee: string; categoryId: number | null; accountName: string }[];
-  const typical = new Map<number, number | null>();
+  const typical = new Map<number, Usual | null>();
   const history = db.prepare("SELECT -amount AS a FROM transactions WHERE status = 'posted' AND category_id = ? AND amount < 0 AND date >= ? AND date < ?");
-  const typicalFor = (categoryId: number): number | null => {
+  const typicalFor = (categoryId: number): Usual | null => {
     if (!typical.has(categoryId)) {
       const values = (history.all(categoryId, addDays(now, -365), addDays(now, -30)) as { a: number }[]).map((r) => r.a);
-      typical.set(categoryId, values.length >= 5 ? median(values) : null);
+      typical.set(categoryId, usualFor(values, settings.largeMultiple));
     }
     return typical.get(categoryId)!;
   };
@@ -147,7 +148,7 @@ export function computeAlerts(db: Db, settings = getAlertSettings(db)): AlertVie
     if (regular.has(t.id)) continue;
     const amount = -t.amount;
     const usual = t.categoryId === null ? null : typicalFor(t.categoryId);
-    const byMultiple = usual !== null && amount >= 10_000 && amount > usual * settings.largeMultiple;
+    const byMultiple = usual !== null && amount >= 10_000 && amount > usual.threshold;
     if (amount < settings.largeAmount && !byMultiple) continue;
     if (++large > 5) break;
     out.push({
@@ -155,7 +156,7 @@ export function computeAlerts(db: Db, settings = getAlertSettings(db)): AlertVie
       kind: "large_transaction",
       severity: "info",
       title: `Large charge: ${t.payee} ${usd(amount)}`,
-      message: `On ${t.date} from ${t.accountName}.${byMultiple ? ` That's ${Math.round((amount / usual!) * 10) / 10}× the usual ${usd(usual!)} for this category.` : ""}`,
+      message: `On ${t.date} from ${t.accountName}.${byMultiple ? ` That's ${Math.round((amount / usual!.median) * 10) / 10}× the usual ${usd(usual!.median)} for this category, well beyond its normal swings.` : ""}`,
       facts: [{ label: "Amount", value: amount, kind: "money" }],
       link: "/transactions",
     });

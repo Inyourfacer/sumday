@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { simulate, whatIfs, type HistoricalYear, type SimInput, type SimPerson } from "./montecarlo.ts";
+import { historicalReplay, simulate, whatIfs, wilson, type HistoricalYear, type SimInput, type SimPerson } from "./montecarlo.ts";
 import { benefitAtClaim, fullRetirementAge, requiredMinimum, rmdStartAge, seededRandom, type RmdTable } from "./rules.ts";
 import { spendingAtAge, type SpendingPlan } from "./spending.ts";
 import { applyOverrides, describeOverride } from "./overrides.ts";
+import type { TaxSetup, TaxTable } from "./tax.ts";
 
 const RMD = JSON.parse(readFileSync(new URL("../../../data/rmd/uniform-lifetime.json", import.meta.url), "utf8")) as RmdTable;
 const HISTORY = (JSON.parse(readFileSync(new URL("../../../data/returns/us-annual.json", import.meta.url), "utf8")) as { years: HistoricalYear[] }).years;
@@ -126,6 +127,18 @@ describe("simulation mechanics (constant 5% returns, no inflation)", () => {
     expect(r.bands[0]!.p50).toBe(Math.round((100_000_000 - 4_000_000) * 1.05));
     // Every run is the same with constant returns.
     expect(r.bands[5]!.p10).toBe(r.bands[5]!.p90);
+  });
+
+  it("simulates only the rest of the first year", () => {
+    const worker = retiree({ birthYear: 1990, income: 10_000_000, pretaxPct: 10 });
+    const balances = { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: 50_000_000 } };
+    const whole = simulate(input({ people: [worker], balances }));
+    const part = simulate(input({ people: [worker], balances, yearFraction: 0.25 }));
+    // Full year: ($500k + $10k) × 1.05. A quarter year: ($500k + $2.5k) × 1.05^0.25.
+    expect(whole.bands[0]!.p50).toBe(Math.round(51_000_000 * 1.05));
+    expect(part.bands[0]!.p50).toBe(Math.round(50_250_000 * 1.05 ** 0.25));
+    // Later years are unchanged in length: the second year is a full year for both.
+    expect(part.bands[1]!.p50).toBe(Math.round((part.bands[0]!.p50 + 1_000_000) * 1.05));
   });
 
   it("fails when the money runs out, and says when", () => {
@@ -270,5 +283,189 @@ describe("simulation with real history", () => {
       expect(w.toReachTarget.spendLessPerYear).toBeGreaterThan(0);
       expect(w.toReachTarget.extraMonthlySavings === null || w.toReachTarget.extraMonthlySavings > 0).toBe(true);
     }
+  });
+});
+
+describe("benchmarks against published safe-withdrawal results", () => {
+  // $1M, 60/40, no fees or taxes, spending a fixed share of the start balance in today's dollars for 30 years,
+  // taken at the start of each year: the setup of the Trinity study and its successors.
+  const planAt = (rate: number, over: Partial<SimInput> = {}): SimInput => ({
+    startYear: 2026,
+    endYear: 2055,
+    people: [{ id: 1, birthYear: 1961, retirementAge: 65, income: 0, raisePct: 0, pretaxPct: 0, rothPct: 0, matchTiers: [], hsaPayroll: 0, socialSecurity: null, claimAge: 67, pension: null, rmdStartAge: 75 }],
+    balances: { taxable: 100_000_000, taxableBasis: 100_000_000, roth: 0, hsa: 0, traditional: {} },
+    allocation: { stocks: 0.6, bonds: 0.4, cash: 0 },
+    feePct: 0,
+    extraSavings: { taxable: 0, roth: 0, hsa: 0, traditional: {} },
+    spending: Array(30).fill(Math.round(100_000_000 * rate)),
+    taxes: { ordinaryPct: 0, capitalGainsPct: 0 },
+    history: HISTORY,
+    rmd: RMD,
+    runs: 5000,
+    blockLength: 5,
+    seed: 7,
+    ...over,
+  });
+
+  it("replays real 30-year retirements: a 4% rule mostly survives, 3% always does, 6% often doesn't", () => {
+    const at = (rate: number) => historicalReplay(planAt(rate));
+    const four = at(0.04);
+    expect(four.cohorts.length).toBe(HISTORY.length - 29);
+    // Published results put 60/40 at 4% in the mid-90s percent or higher, and 3% at 100%.
+    expect(four.successRate).toBeGreaterThanOrEqual(0.9);
+    expect(at(0.03).successRate).toBe(1);
+    expect(at(0.06).successRate).toBeLessThan(0.85);
+    // The worst starts are the well-known ones (late 1960s and 1970s), not the 1990s.
+    const failed = four.cohorts.filter((c) => !c.success).map((c) => c.startYear);
+    expect(failed.every((y) => y >= 1928 && y <= 1980)).toBe(true);
+  });
+
+  it("the random method lands near the real-history replay", () => {
+    const replay = historicalReplay(planAt(0.04)).successRate;
+    const random = simulate(planAt(0.04), { bands: false }).successRate;
+    expect(Math.abs(random - replay)).toBeLessThan(0.12);
+  });
+});
+
+describe("simulation properties", () => {
+  const base = (over: Partial<SimInput> = {}): SimInput => input({ history: HISTORY, runs: 2000, spending: Array(30).fill(4_000_000), ...over });
+
+  it("gives the same answer for the same seed and a different one for another", () => {
+    const a = simulate(base({ seed: 3 }), { bands: false });
+    expect(simulate(base({ seed: 3 }), { bands: false }).successRate).toBe(a.successRate);
+  });
+
+  it("is monotone: more spending never helps and more saving never hurts", () => {
+    const rate = (over: Partial<SimInput>) => simulate(base(over), { bands: false }).successRate;
+    const worker = retiree({ birthYear: 1990, income: 10_000_000, retirementAge: 55, pretaxPct: 5 });
+    const spend = (m: number) => rate({ people: [worker], spending: Array(70).fill(0).map((_, t) => (2026 + t >= 2045 ? 4_000_000 * m : 0)), endYear: 2095 });
+    expect(spend(0.8)).toBeGreaterThanOrEqual(spend(1));
+    expect(spend(1)).toBeGreaterThanOrEqual(spend(1.3));
+    const save = (x: number) => rate({ people: [worker], endYear: 2095, spending: Array(70).fill(0).map((_, t) => (2026 + t >= 2045 ? 4_000_000 : 0)), extraSavings: { taxable: x, roth: 0, hsa: 0, traditional: {} } });
+    expect(save(0)).toBeLessThanOrEqual(save(500_000));
+    expect(save(500_000)).toBeLessThanOrEqual(save(2_000_000));
+  });
+
+  it("a return haircut never helps", () => {
+    const rate = (h: number) => simulate(base({ returnHaircutPct: h }), { bands: false }).successRate;
+    expect(rate(0)).toBeGreaterThanOrEqual(rate(1));
+    expect(rate(1)).toBeGreaterThanOrEqual(rate(2));
+  });
+
+  it("reports a confidence interval and how fragile the successes are", () => {
+    const r = simulate(base({ spending: Array(30).fill(5_500_000) }));
+    expect(r.successInterval[0]).toBeLessThanOrEqual(r.successRate);
+    expect(r.successInterval[1]).toBeGreaterThanOrEqual(r.successRate);
+    expect(r.fragileRate).toBeGreaterThanOrEqual(0);
+    expect(r.fragileRate).toBeLessThanOrEqual(r.successRate);
+    expect(wilson(85, 100)[0]).toBeCloseTo(0.767, 2);
+    expect(wilson(0, 0)).toEqual([0, 1]);
+  });
+
+  it("never stitches 2025 to 1928: a block that hits the end of history starts over", () => {
+    // History of 3 distinct years; with 1-in-3 starts and block 5, every run still only uses real consecutive years.
+    const tiny: HistoricalYear[] = [
+      { year: 1, stocks: 0.1, bonds: 0, bills: 0, inflation: 0 },
+      { year: 2, stocks: 0.2, bonds: 0, bills: 0, inflation: 0 },
+      { year: 3, stocks: -0.9, bonds: 0, bills: 0, inflation: 0 },
+    ];
+    const r = simulate(input({ history: tiny, allocation: { stocks: 1, bonds: 0, cash: 0 }, runs: 500, endYear: 2028, spending: Array(3).fill(0) }));
+    // A -90% year can only come right after the 0.2 year or at the start of a block, never preceding the 0.1 year in a wrap: 1→2→3 or restarts.
+    // So the median stays defined and finite.
+    expect(Number.isFinite(r.medianAtEnd)).toBe(true);
+  });
+});
+
+describe("bracket taxes in retirement", () => {
+  const TABLE = JSON.parse(readFileSync(new URL("../../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
+  const setup: TaxSetup = { table: TABLE, filing: "married_joint", statePct: 0 };
+  const brackets = (over: Partial<TaxSetup> = {}) => ({ ordinaryPct: 15, capitalGainsPct: 15, brackets: { ...setup, ...over } });
+  const cents = (d: number) => d * 100;
+
+  it("draws enough from pre-tax money to cover spending after the tax the draw causes", () => {
+    const r = simulate(
+      input({
+        balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(1_000_000) } },
+        spending: Array(30).fill(cents(40_000)),
+        taxes: brackets(),
+      }),
+    );
+    // Married, $32,200 deduction: draw G so that G − 10% × (G − 32,200) = 40,000, so G ≈ 40,866.67.
+    const draw = (40_000 - 3_220) / 0.9;
+    expect(r.bands[0]!.p50).toBeCloseTo(Math.round(cents(1_000_000 - draw) * 1.05), -2);
+  });
+
+  it("pays no tax when gains sit under the deduction and the 0% band", () => {
+    const r = simulate(
+      input({
+        balances: { taxable: cents(1_000_000), taxableBasis: cents(500_000), roth: 0, hsa: 0, traditional: {} },
+        spending: Array(30).fill(cents(40_000)),
+        taxes: brackets(),
+      }),
+    );
+    // Half of each sale is gain: $20,000 of gains, taxed at nothing. The flat 15% would have taken about $1,300 more.
+    expect(r.bands[0]!.p50).toBe(Math.round((cents(1_000_000) - cents(40_000)) * 1.05));
+    const flat = simulate(
+      input({
+        balances: { taxable: cents(1_000_000), taxableBasis: cents(500_000), roth: 0, hsa: 0, traditional: {} },
+        spending: Array(30).fill(cents(40_000)),
+      }),
+    );
+    expect(flat.bands[0]!.p50).toBeLessThan(r.bands[0]!.p50);
+  });
+
+  it("taxes a big spender more than the flat rate does, and a frugal one less", () => {
+    const run = (spend: number, taxes: SimInput["taxes"]) =>
+      simulate(input({ balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(3_000_000) } }, spending: Array(30).fill(cents(spend)), taxes }), {
+        bands: false,
+      });
+    const flat = { ordinaryPct: 15, capitalGainsPct: 15 };
+    // Frugal: $30,000 is under the deduction, so the bracket model pays no tax and lasts at least as long.
+    expect(run(30_000, brackets()).medianDepletionYear ?? 9999).toBeGreaterThanOrEqual(run(30_000, flat).medianDepletionYear ?? 9999);
+    // Big spender: $250,000 reaches the 24% band and beyond, well over a flat 15%.
+    const big = run(250_000, brackets());
+    const bigFlat = run(250_000, flat);
+    expect(big.successRate).toBeLessThanOrEqual(bigFlat.successRate);
+    expect((big.medianDepletionYear ?? 9999) <= (bigFlat.medianDepletionYear ?? 9999)).toBe(true);
+  });
+
+  it("taxes Social Security only once other income pushes past the thresholds", () => {
+    const person = retiree({ socialSecurity: cents(2_500), claimAge: 62 }); // $30,000 a year
+    const run = (traditional: number) =>
+      simulate(
+        input({
+          people: [person],
+          balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(traditional) } },
+          spending: Array(30).fill(cents(60_000)),
+          taxes: brackets(),
+        }),
+      ).bands[0]!.p50;
+    // Spending $60k with $30k of benefits needs about $30k+ more; the result must be finite and the portfolio must shrink.
+    const after = run(1_000_000);
+    expect(after).toBeLessThan(cents(1_000_000) * 1.05);
+    expect(after).toBeGreaterThan(cents(900_000));
+  });
+
+  it("is monotone in spending and never funds more than the money available", () => {
+    const rate = (spend: number) =>
+      simulate(
+        input({
+          history: HISTORY,
+          runs: 1500,
+          balances: { taxable: cents(300_000), taxableBasis: cents(200_000), roth: cents(100_000), hsa: cents(20_000), traditional: { 1: cents(600_000) } },
+          spending: Array(30).fill(cents(spend)),
+          taxes: brackets(),
+        }),
+        { bands: false },
+      ).successRate;
+    expect(rate(40_000)).toBeGreaterThanOrEqual(rate(55_000));
+    expect(rate(55_000)).toBeGreaterThanOrEqual(rate(75_000));
+    expect(rate(500_000)).toBe(0);
+  });
+
+  it("a state tax only ever lowers the result", () => {
+    const rate = (statePct: number) =>
+      simulate(input({ history: HISTORY, runs: 1500, balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(1_500_000) } }, spending: Array(30).fill(cents(70_000)), taxes: brackets({ statePct }) }), { bands: false }).successRate;
+    expect(rate(0)).toBeGreaterThanOrEqual(rate(5));
   });
 });

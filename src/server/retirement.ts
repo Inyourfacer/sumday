@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { parseIsoDate } from "../engine/dates.ts";
-import { fees } from "../engine/invest/portfolio.ts";
-import { simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
+import { allocation as portfolioAllocation, fees } from "../engine/invest/portfolio.ts";
+import { historicalReplay, simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
+import type { TaxTable } from "../engine/retire/tax.ts";
 import { benefitAtClaim, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
 import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
-import type { RetirementResponse } from "../shared/api.ts";
+import type { ClaimingResponse, RetirementResponse } from "../shared/api.ts";
 import { retirementSettingsSchema } from "../shared/schemas.ts";
 import { listAccounts } from "./accounts.ts";
 import { today } from "./budget.ts";
@@ -15,19 +16,29 @@ import { PORTFOLIO_TYPES, getTarget, loadHoldings, toPositions } from "./holding
 import { getHousehold, getPeople } from "./household.ts";
 import { parse } from "./http.ts";
 import { buildPlan, spendingBaseline } from "./plan.ts";
+import type { Recommendation } from "../engine/plan/waterfall.ts";
 
 const RETURNS = JSON.parse(readFileSync(new URL("../../data/returns/us-annual.json", import.meta.url), "utf8")) as {
   source: string;
   years: HistoricalYear[];
 };
+const TAX = JSON.parse(readFileSync(new URL("../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
 const RMD = JSON.parse(readFileSync(new URL("../../data/rmd/uniform-lifetime.json", import.meta.url), "utf8")) as RmdTable & { source: string };
 
 interface StoredSettings {
   successTarget: number;
+  /** brackets = the tax code (deduction, brackets, gains, Social Security); flat = the two rates below. */
+  taxMode: "brackets" | "flat";
+  /** Flat state income tax in the bracket model, percent. */
+  stateTaxPct: number;
   ordinaryTaxPct: number;
   capitalGainsPct: number;
   runs: number;
   blockLength: number;
+  /** Percentage points taken off stock and bond returns, to test a worse future than history. */
+  returnHaircutPct: number;
+  /** target = the mix you aim for, rebalanced yearly; actual = the mix of what you hold today, kept as is. */
+  allocationSource: "target" | "actual";
   includePlanSavings: boolean;
   spending: { categoryOverrides: Record<string, number | null>; items: SpendingPlan["items"]; oneOffs: SpendingPlan["oneOffs"] };
   /** Changes promoted from scenarios (extra savings, spending changes, one-time amounts, a home). */
@@ -36,10 +47,14 @@ interface StoredSettings {
 
 const DEFAULTS: StoredSettings = {
   successTarget: 0.85,
+  taxMode: "brackets",
+  stateTaxPct: 0,
   ordinaryTaxPct: 15,
   capitalGainsPct: 15,
   runs: 10_000,
   blockLength: 5,
+  returnHaircutPct: 0,
+  allocationSource: "target",
   includePlanSavings: true,
   spending: { categoryOverrides: {}, items: [], oneOffs: [] },
   events: [],
@@ -48,6 +63,48 @@ const DEFAULTS: StoredSettings = {
 export function getSettings(db: Db): StoredSettings {
   const stored = getSetting<Partial<StoredSettings>>(db, "retirement") ?? {};
   return { ...DEFAULTS, ...stored, spending: { ...DEFAULTS.spending, ...stored.spending } };
+}
+
+/** Share of the calendar year still to come, counting today (Jan 1 = 1, Dec 31 = 1/365). */
+export function shareOfYearLeft(now: string): number {
+  const { year, month, day } = parseIsoDate(now);
+  const start = Date.UTC(year, 0, 1);
+  const length = (Date.UTC(year + 1, 0, 1) - start) / 86_400_000;
+  const elapsed = (Date.UTC(year, month - 1, day) - start) / 86_400_000;
+  return (length - elapsed) / length;
+}
+
+export type ExtraSavings = SimInput["extraSavings"];
+
+export function emptySavings(): ExtraSavings {
+  return { taxable: 0, roth: 0, hsa: 0, traditional: {} };
+}
+
+/** Yearly money one recommendation puts into each kind of account. */
+export function savingsOf(r: Recommendation): ExtraSavings {
+  const out = emptySavings();
+  if (r.amount <= 0) return out;
+  // What lands in the account: a pre-tax payroll step costs less take-home pay than it deposits.
+  const yearly = (r.contribution ?? r.amount) * 12;
+  if (r.step === "ira") out.roth = yearly;
+  else if (r.step === "taxable") out.taxable = yearly;
+  else if (r.step === "hsa") out.hsa = yearly;
+  else if ((r.step === "max_workplace" || r.step === "employer_match") && r.subject?.kind === "person") {
+    out.traditional[r.subject.id] = yearly;
+    // The employer match earned by raising the contribution is part of the plan's value too.
+    if (r.step === "employer_match") {
+      const match = r.facts.find((f) => f.label === "Extra employer money per year");
+      if (match && typeof match.value === "number") out.traditional[r.subject.id]! += match.value;
+    }
+  }
+  return out;
+}
+
+export function addSavings(into: ExtraSavings, add: ExtraSavings, sign = 1): void {
+  into.taxable += sign * add.taxable;
+  into.roth += sign * add.roth;
+  into.hsa += sign * add.hsa;
+  for (const [id, v] of Object.entries(add.traditional)) into.traditional[Number(id)] = (into.traditional[Number(id)] ?? 0) + sign * v;
 }
 
 export interface Built {
@@ -112,22 +169,21 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
   const { target } = getTarget(db);
   const stocks = (target.us_stock ?? 0) + (target.intl_stock ?? 0) + (target.real_estate ?? 0) + (target.other ?? 0);
   const round = (x: number) => Math.round(x * 1e6) / 1e6;
-  const allocation = { stocks: round(stocks), bonds: round(target.bonds ?? 0), cash: round(target.cash ?? 0) };
+  let allocation = { stocks: round(stocks), bonds: round(target.bonds ?? 0), cash: round(target.cash ?? 0) };
+  if (settings.allocationSource === "actual") {
+    // What is held today in the accounts the projection covers; unclassified funds are left out of the shares.
+    const held = portfolioAllocation(toPositions(holdings.filter((h) => accounts.some((a) => a.id === h.account_id))));
+    if (held.classified > 0) {
+      const share = (...classes: (keyof typeof held.byClass)[]) => classes.reduce((s, c) => s + held.byClass[c], 0) / held.classified;
+      allocation = { stocks: round(share("us_stock", "intl_stock", "real_estate", "other")), bonds: round(share("bonds")), cash: round(share("cash")) };
+    }
+  }
   const feePct = fees(toPositions(holdings)).weighted ?? 0;
 
   // Savings the plan recommends each month, while anyone is still working.
-  const extraSavings = { taxable: 0, roth: 0, hsa: 0, traditional: {} as Record<number, number> };
+  const extraSavings = emptySavings();
   if (settings.includePlanSavings) {
-    for (const r of buildPlan(db).result.recommendations) {
-      if (r.amount <= 0) continue;
-      const yearly = r.amount * 12;
-      if (r.step === "ira") extraSavings.roth += yearly;
-      else if (r.step === "taxable") extraSavings.taxable += yearly;
-      else if (r.step === "hsa") extraSavings.hsa += yearly;
-      else if ((r.step === "max_workplace" || r.step === "employer_match") && r.subject?.kind === "person") {
-        extraSavings.traditional[r.subject.id] = (extraSavings.traditional[r.subject.id] ?? 0) + yearly;
-      }
-    }
+    for (const r of buildPlan(db).result.recommendations) addSavings(extraSavings, savingsOf(r));
   }
 
   // Retirement spending from today's budget.
@@ -153,6 +209,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
 
   const raw: SimInput = {
     startYear,
+    yearFraction: shareOfYearLeft(now),
     endYear,
     people: simPeople,
     balances,
@@ -160,11 +217,16 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     feePct,
     extraSavings,
     spending,
-    taxes: { ordinaryPct: settings.ordinaryTaxPct, capitalGainsPct: settings.capitalGainsPct },
+    taxes: {
+      ordinaryPct: settings.ordinaryTaxPct,
+      capitalGainsPct: settings.capitalGainsPct,
+      ...(settings.taxMode === "brackets" ? { brackets: { table: TAX, filing: household.filingStatus, statePct: settings.stateTaxPct } } : {}),
+    },
     history: RETURNS.years,
     rmd: RMD,
     runs: settings.runs,
     blockLength: settings.blockLength,
+    returnHaircutPct: settings.returnHaircutPct,
     seed: 20_260_101,
   };
   // Events promoted from scenarios apply on top of the plan.
@@ -204,9 +266,17 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
   };
 }
 
+/** Runs behind each what-if answer; fewer than the headline for speed, so they are labelled approximate. */
+const WHAT_IF_RUNS = 3000;
+
 // Results are cached by their exact inputs: the same question gets the same (seeded) answer.
-const cache = new Map<string, { result: SimResult; whatIfs: WhatIfs | null }>();
-function cached(key: string, run: () => { result: SimResult; whatIfs: WhatIfs | null }) {
+interface Cached {
+  result: SimResult;
+  whatIfs: WhatIfs | null;
+  checks: NonNullable<RetirementResponse["checks"]>;
+}
+const cache = new Map<string, Cached>();
+function cached(key: string, run: () => Cached) {
   const hit = cache.get(key);
   if (hit) return hit;
   const value = run();
@@ -222,28 +292,72 @@ export function retirement(db: Db): RetirementResponse {
     returns: RETURNS.source,
     returnsYears: `${RETURNS.years[0]!.year}–${RETURNS.years.at(-1)!.year}`,
     rmd: RMD.source,
+    tax: TAX.source,
   };
   const publicSettings = {
     successTarget: settings.successTarget,
+    taxMode: settings.taxMode,
+    stateTaxPct: settings.stateTaxPct,
     ordinaryTaxPct: settings.ordinaryTaxPct,
     capitalGainsPct: settings.capitalGainsPct,
     runs: settings.runs,
     blockLength: settings.blockLength,
+    returnHaircutPct: settings.returnHaircutPct,
+    allocationSource: settings.allocationSource,
     includePlanSavings: settings.includePlanSavings,
   };
   const who = new Map(getPeople(db).map((p) => [p.id, p.name]));
   const events = settings.events.map((o) => describeOverride(o, who));
-  if (!built) return { ready: false, missing, settings: publicSettings, inputs: null, events, result: null, whatIfs: null, sources };
+  if (!built) return { ready: false, missing, settings: publicSettings, inputs: null, events, result: null, whatIfs: null, checks: null, sources };
   const key = JSON.stringify({ i: { ...built.input, history: undefined, rmd: undefined }, t: settings.successTarget, w: true });
-  const { result, whatIfs: w } = cached(key, () => {
+  const { result, whatIfs: w, checks } = cached(key, () => {
     const result = simulate(built.input);
-    return { result, whatIfs: whatIfs(built.input, settings.successTarget, result, 1500, built.view.spending.firstYear) };
+    // Two other ways to look at the same plan, so one method's quirks don't decide the answer.
+    const stressPoints = 1;
+    const stress = simulate({ ...built.input, returnHaircutPct: (built.input.returnHaircutPct ?? 0) + stressPoints }, { bands: false });
+    const replay = historicalReplay(built.input);
+    return {
+      result,
+      whatIfs: whatIfs(built.input, settings.successTarget, result, WHAT_IF_RUNS, built.view.spending.firstYear),
+      checks: {
+        stress: { haircutPct: stressPoints, successRate: stress.successRate },
+        replay: { successRate: replay.successRate, startYears: replay.cohorts.length },
+        whatIfRuns: WHAT_IF_RUNS,
+      },
+    };
   });
-  return { ready: true, missing: [], settings: publicSettings, inputs: built.view, events, result, whatIfs: w, sources };
+  return { ready: true, missing: [], settings: publicSettings, inputs: built.view, events, result, whatIfs: w, checks, sources };
+}
+
+/**
+ * For each person with Social Security estimates: the chance the money lasts
+ * if they claim at each age from 62 to 70, everything else unchanged. Same
+ * seed for every age, so the differences come from the claim age alone.
+ */
+export function claiming(db: Db): ClaimingResponse {
+  const settings = getSettings(db);
+  const { built } = buildInput(db, settings);
+  if (!built) return { ready: false, people: [] };
+  const people = getPeople(db);
+  const out: ClaimingResponse["people"] = [];
+  built.input.people.forEach((sp, k) => {
+    const person = people.find((p) => p.id === sp.id);
+    if (!person || benefitAtClaim(person.socialSecurity, person.ssClaimAge, sp.birthYear) === null) return;
+    const options = [];
+    for (let age = 62; age <= 70; age++) {
+      const monthly = benefitAtClaim(person.socialSecurity, age, sp.birthYear)!;
+      const simPeople = built.input.people.map((x, i) => (i === k ? { ...x, socialSecurity: monthly, claimAge: age } : x));
+      const r = simulate({ ...built.input, people: simPeople, runs: 3000 }, { bands: false });
+      options.push({ age, monthly, successRate: r.successRate, medianAtEnd: r.medianAtEnd });
+    }
+    out.push({ id: sp.id, name: person.name, planned: person.ssClaimAge, options });
+  });
+  return { ready: true, people: out };
 }
 
 export function registerRetirementRoutes(app: FastifyInstance, db: Db): void {
   app.get("/api/retirement", async () => retirement(db));
+  app.get("/api/retirement/claiming", async () => claiming(db));
 
   app.put("/api/retirement/settings", async (request) => {
     const patch = parse(retirementSettingsSchema, request.body);

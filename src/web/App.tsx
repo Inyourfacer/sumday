@@ -11,6 +11,7 @@ import { RetirementPage } from "./pages/Retirement.tsx";
 import { ScenariosPage } from "./pages/Scenarios.tsx";
 import { ReportPage, ReportsPage } from "./pages/Reports.tsx";
 import { SettingsAlertsPage } from "./pages/SettingsAlerts.tsx";
+import { SettingsAssumptionsPage } from "./pages/SettingsAssumptions.tsx";
 import { SettingsDataPage } from "./pages/SettingsData.tsx";
 import { useDesktopAlerts } from "./desktopAlerts.ts";
 import { PlanPage } from "./pages/Plan.tsx";
@@ -70,6 +71,7 @@ function route(path: string, summary: SummaryResponse | undefined): ReactNode {
   if (path === "/reports") return <ReportsPage />;
   if ((m = matchPath("/reports/:month", path))) return <ReportPage key={m.month} month={m.month!} />;
   if (path === "/settings/alerts") return <SettingsAlertsPage />;
+  if (path === "/settings/assumptions") return <SettingsAssumptionsPage />;
   if (path === "/settings/data") return <SettingsDataPage />;
   if (path === "/cashflow") return <CashFlowPage />;
   if (path === "/recurring") return <RecurringPage />;
@@ -103,24 +105,37 @@ export function App() {
   }, [path, summary.data]);
 
   const s = summary.data;
-  const main: NavItem[] = [
+  const top: NavItem[] = [
     { to: "/", label: "Dashboard" },
     { to: "/plan", label: "Next best moves" },
-    { to: "/accounts", label: "Accounts" },
-    { to: "/transactions", label: "Transactions", badge: s?.uncategorizedCount },
-    { to: "/import", label: "Import", badge: s?.stagedImportCount },
-    { to: "/budget", label: "Budget" },
-    { to: "/cashflow", label: "Cash flow" },
-    { to: "/recurring", label: "Recurring" },
-    { to: "/goals", label: "Goals" },
-    { to: "/debt", label: "Debt" },
-    { to: "/investments", label: "Investments" },
-    { to: "/retirement", label: "Retirement" },
-    { to: "/scenarios", label: "Scenarios" },
-    { to: "/reports", label: "Reports" },
+  ];
+  const groups: { heading: string; items: NavItem[] }[] = [
+    {
+      heading: "Plan",
+      items: [
+        { to: "/goals", label: "Goals" },
+        { to: "/debt", label: "Debt" },
+        { to: "/investments", label: "Investments" },
+        { to: "/retirement", label: "Retirement" },
+        { to: "/scenarios", label: "Scenarios" },
+        { to: "/reports", label: "Reports" },
+      ],
+    },
+    {
+      heading: "Money",
+      items: [
+        { to: "/accounts", label: "Accounts" },
+        { to: "/budget", label: "Budget" },
+        { to: "/cashflow", label: "Cash flow" },
+        { to: "/recurring", label: "Recurring" },
+        { to: "/transactions", label: "Transactions", badge: s?.uncategorizedCount },
+        { to: "/import", label: "Import", badge: s?.stagedImportCount },
+      ],
+    },
   ];
   const settings: NavItem[] = [
     { to: "/settings/household", label: "Household" },
+    { to: "/settings/assumptions", label: "Assumptions" },
     { to: "/settings/categories", label: "Categories" },
     { to: "/settings/rules", label: "Rules" },
     { to: "/settings/alerts", label: "Alerts" },
@@ -134,8 +149,16 @@ export function App() {
           Sum<span>day</span>
         </Link>
         <nav aria-label="Sections">
-          {main.map((item) => (
+          {top.map((item) => (
             <NavLink key={item.to} item={item} path={path} />
+          ))}
+          {groups.map((g) => (
+            <div key={g.heading} className="nav-group" role="group" aria-label={g.heading}>
+              <span className="nav-heading">{g.heading}</span>
+              {g.items.map((item) => (
+                <NavLink key={item.to} item={item} path={path} />
+              ))}
+            </div>
           ))}
           <span className="nav-heading">Settings</span>
           {settings.map((item) => (

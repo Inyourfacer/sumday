@@ -328,7 +328,15 @@ export const planSettingsSchema = z.object({
   emergencyMonths: z.number().min(1).max(24).nullable().optional(),
   /** Override the monthly amount to allocate. null = work it out from the budget. */
   availableOverride: cents.refine((v) => v >= 0, "Can't be negative.").nullable().optional(),
+  /** Marginal income-tax rate (%), so pre-tax payroll steps are priced at their take-home cost. null = not set. */
+  marginalTaxPct: z.number().min(0).max(60).nullable().optional(),
 });
+export const exploreSchema = z.object({
+  retireShiftYears: z.number().int().min(-10).max(10).default(0),
+  spendingPct: z.number().min(50).max(150).default(100),
+  extraMonthly: cents.refine((v) => v >= 0 && v <= 1_000_000, "Between $0 and $10,000 a month.").default(0),
+});
+export const planPreviewSchema = z.object({ steps: z.array(z.object({ id: z.string(), enabled: z.boolean() })) });
 export const debtQuerySchema = z.object({
   extra: z.coerce.number().int().min(0).max(100_000_000).optional(),
 });
@@ -457,6 +465,13 @@ export const alertSettingsSchema = z.object({
 });
 export const alertDismissSchema = z.object({ key: z.string().min(1).max(500) });
 
+export const moveActionSchema = z.object({
+  key: z.string().min(1).max(200),
+  action: z.enum(["done", "snooze", "dismiss", "restore"]),
+  /** Snooze length in days. */
+  days: z.number().int().min(1).max(365).optional(),
+});
+
 export const reportMonthSchema = z.object({ month: monthKey });
 
 // ---------- Retirement ----------
@@ -465,10 +480,14 @@ const ageField = z.number().int().min(18).max(120);
 export const retirementSettingsSchema = z.object({
   /** Chance of success to aim for, 0.5–0.99. */
   successTarget: z.number().min(0.5).max(0.99).optional(),
+  taxMode: z.enum(["brackets", "flat"]).optional(),
+  stateTaxPct: z.number().min(0).max(15).optional(),
   ordinaryTaxPct: z.number().min(0).max(60).optional(),
   capitalGainsPct: z.number().min(0).max(40).optional(),
   runs: z.number().int().min(500).max(20_000).optional(),
   blockLength: z.number().int().min(1).max(15).optional(),
+  returnHaircutPct: z.number().min(0).max(5).optional(),
+  allocationSource: z.enum(["target", "actual"]).optional(),
   includePlanSavings: z.boolean().optional(),
   /** Changes promoted from scenarios that live in the retirement plan (savings, spending, one-time amounts, a home). */
   events: z.array(overrideSchema).max(30).optional(),

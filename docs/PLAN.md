@@ -86,6 +86,7 @@ it was calculated.
 - Automated import pipeline (watched folder or email inbox → the same staging
   review).
 - Institution-specific adapters (paused).
-- Bracket-based `TaxModel`, Roth conversion planning and tax-optimized
-  withdrawal order.
+- Roth conversion planning and tax-optimized withdrawal order (the
+  bracket-based tax model is done).
+- Mortality-aware planning horizon and survivor benefits.
 - Parametric returns as an alternative Monte Carlo mode.

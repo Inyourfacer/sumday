@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { compareStrategies, payoffPlan, type Debt } from "./debt.ts";
+import { compareStrategies, effectiveApr, payoffPlan, type Debt } from "./debt.ts";
 import { emergencyMonthsDefault, goalProgress } from "./goals.ts";
 import { hsaLimit, iraLimit, limitsFor, workplaceLimit, type ContributionLimits } from "./limits.ts";
-import { DEFAULT_STEPS, fullMatchPct, matchValue, runWaterfall, type WaterfallInput } from "./waterfall.ts";
+import { DEFAULT_STEPS, STEP_IDS, STEP_TEMPLATES, fullMatchPct, matchValue, runWaterfall, type WaterfallInput } from "./waterfall.ts";
 
 const load = (y: number) => JSON.parse(readFileSync(new URL(`../../../data/limits/${y}.json`, import.meta.url), "utf8")) as ContributionLimits;
 const L2025 = load(2025);
@@ -169,11 +169,11 @@ describe("waterfall", () => {
     const r = runWaterfall(input({ available: 2_000_000, emergencySaved: 1_500_000, debts: [], hsaCoverage: "family", hsaProjected: 300_000 }));
     expect(byStep(r, "high_interest_debt")[0]!.status).toBe("done");
     expect(byStep(r, "full_emergency")[0]!.status).toBe("done");
-    // HSA family $8,750 − $3,000 = $5,750 over the 2 months left.
-    expect(byStep(r, "hsa")[0]).toMatchObject({ status: "act", amount: 287_500 });
-    // $7,500 each over 2 months; household income $120k → Roth.
+    // HSA family $8,750 − $3,000 = $5,750, spread over the 2 months left plus 3 months of filing-deadline grace.
+    expect(byStep(r, "hsa")[0]).toMatchObject({ status: "act", amount: 115_000 });
+    // $7,500 each over 5 months; household income $120k → Roth.
     const ira = byStep(r, "ira");
-    expect(ira.map((x) => x.amount)).toEqual([375_000, 375_000]);
+    expect(ira.map((x) => x.amount)).toEqual([150_000, 150_000]);
     expect(ira[0]!.action).toContain("Roth IRA");
     // After the match step Alex is at 5% ($6,000/yr); room $18,500 → $1,542/mo, about 20.5% of pay.
     const max = byStep(r, "max_workplace")[0]!;
@@ -181,9 +181,93 @@ describe("waterfall", () => {
     expect(max.action).toContain("20%");
     expect(byStep(r, "goals")[0]).toMatchObject({ status: "act", amount: 100_000 });
     const taxable = byStep(r, "taxable")[0]!;
-    expect(taxable.amount).toBe(2_000_000 - 20_000 - 287_500 - 750_000 - 154_167 - 100_000);
+    expect(taxable.amount).toBe(2_000_000 - 20_000 - 115_000 - 300_000 - 154_167 - 100_000);
     expect(taxable.action).toContain("add one under Accounts");
     expect(r.leftover).toBe(0);
+  });
+
+  it("spreads IRA room so December doesn't demand the whole remainder", () => {
+    const late = runWaterfall(input({ today: "2026-12-10", available: 2_000_000, emergencySaved: 1_500_000, debts: [], hsaCoverage: "none" }));
+    // 1 month left + 3 grace = 4 months: $1,875 each, not $7,500.
+    expect(byStep(late, "ira").map((x) => x.amount)).toEqual([187_500, 187_500]);
+  });
+
+  it("charges pre-tax payroll contributions at their take-home cost", () => {
+    const base = input({ params: { ...input().params, marginalTaxPct: 20 } });
+    const match = byStep(runWaterfall(base), "employer_match")[0]!;
+    // 2% of $120k / 12 = $200 into the plan, which costs $160 of take-home at 20%.
+    expect(match.amount).toBe(16_000);
+    expect(match.contribution).toBe(20_000);
+    expect(match.action).toBe("Raise Alex's 401k contribution from 3% to 5% of pay.");
+    // A partly funded step still lands on a whole percentage.
+    const tight = runWaterfall(input({ available: 8_000, params: { ...input().params, marginalTaxPct: 20 } }));
+    expect(byStep(tight, "employer_match")[0]).toMatchObject({ status: "partial", amount: 8_000, contribution: 10_000 });
+  });
+
+  it("funds goals due within 5 years first when that step is on, and leaves the default alone", () => {
+    const base = { available: 2_000_000, emergencySaved: 1_500_000, debts: [] as WaterfallInput["debts"], hsaCoverage: "family" as const };
+    const goals = [
+      { id: 5, name: "House", remaining: 2_000_000, requiredMonthly: 100_000, targetDate: "2028-06-30" },
+      { id: 6, name: "Kid's college", remaining: 9_000_000, requiredMonthly: 40_000, targetDate: "2038-09-01" },
+    ];
+    // Default: near_goals is off and the goals step takes every goal in order.
+    const std = runWaterfall(input({ ...base, goals }));
+    expect(byStep(std, "near_goals")[0]!.status).toBe("disabled");
+    expect(byStep(std, "goals").map((x) => x.subject?.name)).toEqual(["House", "Kid's college"]);
+    // Liquidity first: the house moves ahead of HSA and IRA; college stays in the goals step.
+    const liquid = runWaterfall(input({ ...base, goals, steps: STEP_TEMPLATES.liquidity_first.steps }));
+    expect(byStep(liquid, "near_goals").map((x) => x.subject?.name)).toEqual(["House"]);
+    expect(byStep(liquid, "goals").map((x) => x.subject?.name)).toEqual(["Kid's college"]);
+    const order = (step: string) => liquid.recommendations.find((x) => x.step === step)!.order;
+    expect(order("near_goals")).toBeLessThan(order("hsa"));
+    // With little money, the near-term goal gets it and retirement accounts wait.
+    const tight = runWaterfall(input({ ...base, goals, available: 150_000, steps: STEP_TEMPLATES.liquidity_first.steps }));
+    expect(byStep(tight, "near_goals")[0]).toMatchObject({ status: "act", amount: 100_000 });
+    expect(byStep(tight, "ira").every((x) => x.amount === 0 || x.status === "partial")).toBe(true);
+  });
+
+  it("ships templates that list every step once", () => {
+    for (const t of Object.values(STEP_TEMPLATES)) {
+      expect(t.steps.map((s) => s.id).sort()).toEqual([...STEP_IDS].sort());
+    }
+  });
+
+  it("keys each move and gives it a deadline", () => {
+    const r = runWaterfall(input({ available: 2_000_000, emergencySaved: 1_500_000, debts: [], hsaCoverage: "family" }));
+    const keys = r.recommendations.map((x) => x.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(byStep(r, "ira")[0]!.key).toBe("ira:person:1");
+    expect(byStep(r, "ira")[0]!.deadline).toEqual({ date: "2027-04-15", label: "Counts for this year until Apr 15" });
+    expect(byStep(r, "max_workplace")[0]!.deadline?.date).toBe("2026-12-31");
+    expect(byStep(r, "goals")[0]!.deadline).toEqual({ date: "2028-06-30", label: "Goal date" });
+    expect(byStep(r, "taxable")[0]!.deadline).toBeUndefined();
+  });
+
+  it("ranks debts by what they cost over the next year, counting an intro rate that is about to end", () => {
+    // 0% for two more months, then 25%: nearly its full rate over the next year.
+    const ending = { apr: 25, promoApr: 0, promoEnds: "2027-01-08" };
+    expect(effectiveApr(ending, "2026-11-08")).toBeCloseTo(25 * (1 - 61 / 365), 5);
+    // 0% for a year or more: close to free.
+    expect(effectiveApr({ apr: 25, promoApr: 0, promoEnds: "2028-01-01" }, "2026-11-08")).toBe(0);
+    expect(effectiveApr({ apr: 25 }, "2026-11-08")).toBe(25);
+    expect(effectiveApr({ apr: 25, promoApr: 0, promoEnds: "2026-10-01" }, "2026-11-08")).toBe(25);
+
+    const debts = [
+      { id: 20, name: "Steady card", balance: 100_000, apr: 22, minPayment: 3_000, paysInFull: false },
+      { id: 21, name: "Intro card", balance: 100_000, apr: 25, minPayment: 3_000, paysInFull: false, promoApr: 0, promoEnds: "2028-01-01" },
+    ];
+    const r = runWaterfall(input({ available: 5_000, debts }));
+    const order = byStep(r, "high_interest_debt").map((x) => x.subject?.name);
+    // The steady 22% card comes first even though the intro card's standard rate is higher; the intro card is not high-interest yet.
+    expect(order).toEqual(["Steady card"]);
+    expect(byStep(runWaterfall(input({ available: 5_000, debts: [debts[1]!], })), "high_interest_debt")[0]!.status).toBe("done");
+  });
+
+  it("says when a minimum payment is only a guess", () => {
+    const r = runWaterfall(input({ available: 300_000, debts: [{ id: 30, name: "Card", balance: 50_000, apr: 20, minPayment: 2_500, paysInFull: false, minimumEstimated: true }] }));
+    const fact = byStep(r, "high_interest_debt")[0]!.facts.find((f) => f.label === "Minimum payment")!;
+    expect(fact.kind).toBe("text");
+    expect(String(fact.value)).toContain("a guess");
   });
 
   it("respects order and disabled steps", () => {

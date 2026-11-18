@@ -4,9 +4,9 @@
  * its target, and the rest spills to the next step. Every recommendation
  * carries the rule that produced it and the numbers it used.
  */
-import { parseIsoDate, type IsoDate } from "../dates.ts";
+import { monthsBetween, parseIsoDate, type IsoDate } from "../dates.ts";
 import { multiplyCents, type Cents } from "../money.ts";
-import { payoffPlan, type Debt } from "./debt.ts";
+import { effectiveApr, payoffPlan, type Debt } from "./debt.ts";
 import { hsaLimit, iraLimit, workplaceLimit, type ContributionLimits, type FilingStatus } from "./limits.ts";
 
 export const STEP_IDS = [
@@ -14,6 +14,7 @@ export const STEP_IDS = [
   "employer_match",
   "high_interest_debt",
   "full_emergency",
+  "near_goals",
   "hsa",
   "ira",
   "max_workplace",
@@ -28,6 +29,7 @@ export const STEP_TITLES: Record<StepId, string> = {
   employer_match: "Employer 401(k) match",
   high_interest_debt: "High-interest debt",
   full_emergency: "Full emergency fund",
+  near_goals: "Goals due within 5 years",
   hsa: "Health savings account",
   ira: "IRA",
   max_workplace: "Max out workplace plan",
@@ -36,7 +38,56 @@ export const STEP_TITLES: Record<StepId, string> = {
   low_interest_debt: "Pay down low-interest debt",
 };
 
-export const DEFAULT_STEPS: { id: StepId; enabled: boolean }[] = STEP_IDS.map((id) => ({ id, enabled: id !== "low_interest_debt" }));
+export const DEFAULT_STEPS: { id: StepId; enabled: boolean }[] = STEP_IDS.map((id) => ({ id, enabled: id !== "low_interest_debt" && id !== "near_goals" }));
+
+/** Goals due within this many months count as near-term when that step is on. */
+export const NEAR_GOAL_MONTHS = 60;
+
+/**
+ * Ready-made step orders. "standard" is the default. The others change the
+ * trade-off between money you can reach soon and money locked in retirement accounts.
+ */
+export const STEP_TEMPLATES: Record<"standard" | "liquidity_first" | "max_tax_advantage", { label: string; summary: string; steps: { id: StepId; enabled: boolean }[] }> = {
+  standard: {
+    label: "Standard",
+    summary: "Safety first, then tax-advantaged retirement saving, then goals, then taxable investing.",
+    steps: DEFAULT_STEPS,
+  },
+  liquidity_first: {
+    label: "Liquidity first",
+    summary: "Goals due within 5 years are funded before HSA, IRA and extra workplace saving. The employer match still comes first.",
+    steps: [
+      "starter_emergency",
+      "employer_match",
+      "high_interest_debt",
+      "full_emergency",
+      "near_goals",
+      "hsa",
+      "ira",
+      "max_workplace",
+      "goals",
+      "taxable",
+      "low_interest_debt",
+    ].map((id) => ({ id: id as StepId, enabled: id !== "low_interest_debt" })),
+  },
+  max_tax_advantage: {
+    label: "Max tax advantage",
+    summary: "Fills HSA, IRA and the workplace plan before any goal. Best when goals are far off or flexible.",
+    steps: [
+      "starter_emergency",
+      "employer_match",
+      "high_interest_debt",
+      "hsa",
+      "ira",
+      "max_workplace",
+      "full_emergency",
+      "near_goals",
+      "goals",
+      "taxable",
+      "low_interest_debt",
+    ].map((id) => ({ id: id as StepId, enabled: id !== "low_interest_debt" && id !== "near_goals" })),
+  },
+};
 
 export interface PlanPerson {
   id: number;
@@ -58,6 +109,8 @@ export interface PlanPerson {
 export interface PlanDebt extends Debt {
   /** Paid in full every month (a card used for convenience): not debt to pay down. */
   paysInFull: boolean;
+  /** The minimum payment is a guess (2% of the balance), not what the lender requires. */
+  minimumEstimated?: boolean;
 }
 
 export interface PlanGoal {
@@ -79,6 +132,11 @@ export interface WaterfallInput {
     /** APR (%) at or above which debt counts as high-interest. */
     highInterestApr: number;
     emergencyMonths: number;
+    /**
+     * Marginal income-tax rate (%) used to turn a pre-tax payroll contribution
+     * into the smaller drop in take-home pay. 0 / absent = treat gross as net.
+     */
+    marginalTaxPct?: number;
   };
   /** Money available to allocate each month; null when it can't be worked out yet. */
   available: Cents | null;
@@ -111,8 +169,21 @@ export interface Recommendation {
   status: StepStatus;
   /** What to do, in plain words. Empty when there's nothing to do. */
   action: string;
-  /** Monthly amount this step takes. */
+  /** Monthly take-home cash this step takes. */
   amount: Cents;
+  /**
+   * Monthly amount that lands in the account when that differs from `amount`
+   * (a pre-tax payroll contribution is bigger than the pay it costs).
+   */
+  contribution?: Cents;
+  /** Monthly amount already moving to this destination (recent average), when known. */
+  alreadyMoving?: Cents;
+  /** Stable id of this move, for remembering what the user did with it. */
+  key: string;
+  /** The date by which acting still counts (filing deadline, promo end, goal date), when there is one. */
+  deadline?: { date: IsoDate; label: string };
+  /** What the user did with this move, if anything. Set by the server; never read by the engine. */
+  userState?: { state: "done" | "snoozed" | "dismissed"; until: IsoDate | null };
   /** Which person or debt or goal this is about, if any. */
   subject?: { kind: "person" | "debt" | "goal"; id: number; name: string };
   why: string;
@@ -159,6 +230,51 @@ export function fullMatchPct(tiers: PlanPerson["plan"]["matchTiers"]): number {
 }
 
 /** Round a contribution % down to the nearest half percent (what payroll systems accept). */
+/** IRA and HSA money for a year can be added until the filing deadline (mid-April of the next year). */
+export const CONTRIBUTION_GRACE_MONTHS = 3;
+
+/** Months over which to spread a yearly room: the rest of the year plus the filing-deadline grace. */
+export function pacingMonths(monthsLeftInYear: number): number {
+  return monthsLeftInYear + CONTRIBUTION_GRACE_MONTHS;
+}
+
+/** Share of a pre-tax payroll dollar that comes out of take-home pay (Roth-only plans: all of it). */
+export function takeHomeFactor(p: Pick<PlanPerson, "plan">, marginalTaxPct: number): number {
+  if (p.plan.rothPct > 0 && p.plan.pretaxPct === 0) return 1;
+  return 1 - Math.min(60, Math.max(0, marginalTaxPct)) / 100;
+}
+
+/** A move's identity: its step plus the person, debt or goal it is about. */
+export function moveKey(r: Pick<Recommendation, "step" | "subject">): string {
+  return r.subject ? `${r.step}:${r.subject.kind}:${r.subject.id}` : r.step;
+}
+
+/** The date after which a move stops counting (or gets more expensive), when there is one. */
+function deadlineFor(r: Recommendation, year: number, input: WaterfallInput): Recommendation["deadline"] {
+  if (r.status === "done" || r.status === "disabled" || r.status === "not_applicable") return undefined;
+  switch (r.step) {
+    case "ira":
+    case "hsa":
+      // This year's IRA and HSA money can be added until the filing deadline.
+      return { date: `${year + 1}-04-15`, label: "Counts for this year until Apr 15" };
+    case "employer_match":
+    case "max_workplace":
+      return { date: `${year}-12-31`, label: "Payroll changes must start before year end" };
+    case "high_interest_debt":
+    case "low_interest_debt": {
+      const d = input.debts.find((x) => x.id === r.subject?.id);
+      return d?.promoEnds && d.promoEnds >= input.today ? { date: d.promoEnds, label: "Intro rate ends" } : undefined;
+    }
+    case "goals":
+    case "near_goals": {
+      const g = input.goals.find((x) => x.id === r.subject?.id);
+      return g?.targetDate ? { date: g.targetDate, label: "Goal date" } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 function halfPctDown(p: number): number {
   return Math.floor(p * 2 + 1e-9) / 2;
 }
@@ -176,8 +292,8 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
   // Emergency fund money given out by the starter step, so the full step doesn't count it twice.
   let emergencyThisMonth = 0;
 
-  const push = (order: number, step: StepId, rec: Omit<Recommendation, "order" | "step" | "title"> & { title?: string }) => {
-    recs.push({ order, step, title: rec.title ?? STEP_TITLES[step], ...rec });
+  const push = (order: number, step: StepId, rec: Omit<Recommendation, "order" | "step" | "title" | "key"> & { title?: string }) => {
+    recs.push({ order, step, title: rec.title ?? STEP_TITLES[step], key: "", ...rec });
   };
   /** Take up to `need` from what's left; returns what was taken and the status. */
   const take = (need: Cents): { amount: Cents; status: StepStatus } => {
@@ -247,9 +363,12 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             push(order, s.id, { subject, status: "not_applicable", action: "", amount: 0, why: `Add ${p.name}'s income to work out the match.`, facts: [] });
             continue;
           }
-          const cost = multiplyCents(income, Math.max(0, full - current) / 1200);
-          const t = take(cost);
-          const newPct = t.status === "act" ? full : current + halfPctDown((t.amount * 1200) / income);
+          const factor = takeHomeFactor(p, params.marginalTaxPct ?? 0);
+          // Contribution needed (gross, into the plan) and what it costs in take-home pay.
+          const grossCost = multiplyCents(income, Math.max(0, full - current) / 1200);
+          const t = take(Math.round(grossCost * factor));
+          const grossPut = Math.round(t.amount / factor);
+          const newPct = t.status === "act" ? full : current + halfPctDown((grossPut * 1200) / income);
           if (t.amount > 0) contribPct.set(p.id, newPct);
           const gained = matchValue(income, p.plan.matchTiers, newPct) - matchValue(income, p.plan.matchTiers, current);
           push(order, s.id, {
@@ -263,6 +382,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
                   ? `Raise ${p.name}'s ${p.plan.type} contribution from ${pct(current)} to ${pct(newPct)} of pay.`
                   : `${p.name} is ${pct(full - current)} short of the full match.`,
             amount: t.amount,
+            contribution: grossPut,
             why:
               t.status === "done"
                 ? `${p.name} already contributes ${pct(current)}, enough for the full match (${pct(full)}).`
@@ -282,9 +402,11 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
       case "high_interest_debt":
       case "low_interest_debt": {
         const high = s.id === "high_interest_debt";
+        // Rank by what the debt costs over the next year: an intro rate that is about to end counts at nearly its full rate.
+        const rate = (d: PlanDebt) => effectiveApr(d, today);
         const debts = input.debts
-          .filter((d) => !d.paysInFull && d.balance > 0 && (high ? d.apr >= params.highInterestApr : d.apr < params.highInterestApr))
-          .sort((a, b) => b.apr - a.apr || a.balance - b.balance);
+          .filter((d) => !d.paysInFull && d.balance > 0 && (high ? rate(d) >= params.highInterestApr : rate(d) < params.highInterestApr))
+          .sort((a, b) => rate(b) - rate(a) || a.balance - b.balance);
         if (debts.length === 0) {
           push(order, s.id, {
             status: "done",
@@ -312,16 +434,19 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             status: extra > 0 ? "act" : "waiting",
             action:
               extra > 0
-                ? `Pay ${usd(extra)}/mo on top of the minimum on ${d.name} (${pct(d.apr)} APR).`
-                : `${d.name} (${pct(d.apr)} APR) is next once the debts above it are paid.`,
+                ? `Pay ${usd(extra)}/mo on top of the minimum on ${d.name} (${pct(rate(d))} APR).`
+                : `${d.name} (${pct(rate(d))} APR) is next once the debts above it are paid.`,
             amount: extra,
             why: high
-              ? `Paying off a ${pct(d.apr)} debt is a guaranteed ${pct(d.apr)} return. Highest rate first (avalanche) costs the least interest.`
+              ? `Paying off a ${pct(rate(d))} debt is a guaranteed ${pct(rate(d))} return. Highest rate first (avalanche) costs the least interest.`
               : "Optional: low-rate debt costs less than investing usually earns, but being debt-free has its own value.",
             facts: [
               money("Balance", d.balance),
               percent("APR", d.apr),
-              money("Minimum payment", d.minPayment),
+              ...(rate(d) !== d.apr ? [percent("Rate over the next year (intro rate counted)", Math.round(rate(d) * 100) / 100)] : []),
+              d.minimumEstimated
+                ? text("Minimum payment", `${usd(d.minPayment)}, a guess (2% of the balance). Enter the real minimum on the account.`)
+                : money("Minimum payment", d.minPayment),
               ...(withExtra.months !== null ? [months("Paid off in", withExtra.months)] : []),
               ...(minimumOnly.months !== null
                 ? [months("Minimums only", minimumOnly.months), money("Interest saved", minimumOnly.totalInterest - withExtra.totalInterest)]
@@ -346,7 +471,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
         const oldest = Math.max(...input.people.map((p) => p.ageAtYearEnd ?? 0));
         const limit = hsaLimit(limits, input.hsaCoverage, oldest || null);
         const room = Math.max(0, limit - input.hsaProjected);
-        const t = take(Math.ceil(room / monthsLeft));
+        const t = take(Math.ceil(room / pacingMonths(monthsLeft)));
         push(order, s.id, {
           status: t.status,
           action: t.status === "done" ? "" : t.amount > 0 ? `Add ${usd(t.amount)}/mo to your HSA.` : `There's ${usd(room)} of HSA room left this year.`,
@@ -359,7 +484,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             money(`${limits.year} limit (${input.hsaCoverage})`, limit),
             money("This year so far + payroll", input.hsaProjected),
             money("Room left", room),
-            months("Months left this year", monthsLeft),
+            months("Months to spread it over (to the April deadline)", pacingMonths(monthsLeft)),
           ],
         });
         return;
@@ -374,7 +499,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
         for (const p of input.people) {
           const limit = iraLimit(limits, p.ageAtYearEnd);
           const room = Math.max(0, limit - p.iraYtd);
-          const t = take(Math.ceil(room / monthsLeft));
+          const t = take(Math.ceil(room / pacingMonths(monthsLeft)));
           const magi = input.filingStatus === "married_joint" ? household : (p.income ?? 0);
           const [lo, hi] = limits.rothIraPhaseOut[input.filingStatus];
           const kind = magi < lo ? "Roth IRA" : magi < hi ? "Roth IRA (partly: your income is in the phase-out range)" : "backdoor Roth IRA";
@@ -399,7 +524,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
               money(`${limits.year} limit`, limit),
               money("Contributed this year", p.iraYtd),
               money("Room left", room),
-              months("Months left this year", monthsLeft),
+              months("Months to spread it over (to the April deadline)", pacingMonths(monthsLeft)),
               money("Income used for the Roth check", magi),
               text("Roth phase-out", `${usd(lo)}–${usd(hi)}`),
             ],
@@ -425,8 +550,10 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
           const current = contribPct.get(p.id)!;
           const projected = multiplyCents(income, current / 100);
           const room = Math.max(0, limit - projected);
-          const t = take(Math.ceil(room / 12));
-          const newPct = Math.min((limit / income) * 100, current + halfPctDown((t.amount * 1200) / income));
+          const factor = takeHomeFactor(p, params.marginalTaxPct ?? 0);
+          const t = take(Math.ceil((room / 12) * factor));
+          const grossPut = Math.round(t.amount / factor);
+          const newPct = Math.min((limit / income) * 100, current + halfPctDown((grossPut * 1200) / income));
           if (t.amount > 0) contribPct.set(p.id, newPct);
           push(order, s.id, {
             subject,
@@ -436,9 +563,10 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
               t.status === "done"
                 ? ""
                 : t.amount > 0
-                  ? `Raise ${p.name}'s ${p.plan.type} to ${pct(newPct)} of pay (about ${usd(t.amount)}/mo more).`
+                  ? `Raise ${p.name}'s ${p.plan.type} to ${pct(newPct)} of pay (about ${usd(grossPut)}/mo more into the plan).`
                   : `${p.name}'s ${p.plan.type} has ${usd(room)} of yearly room left.`,
             amount: t.amount,
+            contribution: grossPut,
             why:
               t.status === "done"
                 ? `${p.name}'s contributions reach the ${usd(limit)} limit.`
@@ -454,12 +582,23 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
         return;
       }
 
+      case "near_goals":
       case "goals": {
-        if (input.goals.length === 0) {
-          push(order, s.id, { status: "not_applicable", action: "", amount: 0, why: "No savings goals yet. Add one on the Goals page.", facts: [] });
+        const nearOn = input.steps.some((x) => x.id === "near_goals" && x.enabled);
+        const isNear = (g: PlanGoal) => g.targetDate !== null && monthsBetween(today, g.targetDate) <= NEAR_GOAL_MONTHS;
+        // With the near-term step on, it takes goals due soon and this step keeps the rest.
+        const list = s.id === "near_goals" ? input.goals.filter(isNear) : nearOn ? input.goals.filter((g) => !isNear(g)) : input.goals;
+        if (list.length === 0) {
+          push(order, s.id, {
+            status: "not_applicable",
+            action: "",
+            amount: 0,
+            why: s.id === "near_goals" ? "No goal is due within 5 years." : input.goals.length === 0 ? "No savings goals yet. Add one on the Goals page." : "Every goal is due within 5 years and handled by the step above.",
+            facts: [],
+          });
           return;
         }
-        for (const g of input.goals) {
+        for (const g of list) {
           const subject = { kind: "goal" as const, id: g.id, name: g.name };
           if (g.remaining <= 0) {
             push(order, s.id, { subject, title: `Goal: ${g.name}`, status: "done", action: "", amount: 0, why: "Fully funded.", facts: [] });
@@ -520,6 +659,13 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
       }
     }
   });
+
+  const year = parseIsoDate(today).year;
+  for (const r of recs) {
+    r.key = moveKey(r);
+    const dl = deadlineFor(r, year, input);
+    if (dl) r.deadline = dl;
+  }
 
   const available = unknownAvailable ? null : (input.available as Cents);
   const allocated = recs.reduce((s, r) => s + r.amount, 0);

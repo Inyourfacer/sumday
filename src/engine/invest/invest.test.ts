@@ -130,6 +130,41 @@ describe("rebalancing", () => {
   });
 });
 
+describe("wash sales and relative fees", () => {
+  it("warns when a loss is on a fund also held in another account", () => {
+    const positions = [
+      pos({ holdingId: 1, value: 400_000, costBasis: 500_000, label: "VOO" }),
+      pos({ holdingId: 2, value: 400_000, costBasis: 100_000, label: "VTI" }),
+      pos({ holdingId: 3, value: 300_000, taxTreatment: "traditional", accountName: "Rollover IRA", label: "VOO" }),
+      pos({ holdingId: 4, value: 200_000, mix: { intl_stock: 1 } }),
+    ];
+    const sale = rebalance(positions, TARGET).taxableSales.find((s) => s.label === "VOO")!;
+    expect(sale.estimatedGain).toBeLessThan(0);
+    expect(sale.washSaleWarning).toContain("Rollover IRA");
+    // A gain has no wash-sale problem, and neither does a fund held only once.
+    const gain = rebalance(
+      [
+        pos({ holdingId: 1, value: 400_000, costBasis: 100_000, label: "VOO" }),
+        pos({ holdingId: 3, value: 300_000, taxTreatment: "traditional", label: "VOO" }),
+        pos({ holdingId: 4, value: 200_000, mix: { intl_stock: 1 } }),
+      ],
+      TARGET,
+    );
+    expect(gain.taxableSales.every((s) => s.washSaleWarning === undefined)).toBe(true);
+  });
+
+  it("flags a fund that costs over twice a cheaper one you already hold, even under 0.5%", () => {
+    const f = fees([
+      pos({ holdingId: 1, value: 5_000_000, expenseRatio: 0.03, label: "Index" }),
+      pos({ holdingId: 2, value: 1_000_000, expenseRatio: 0.35, label: "Pricey blend" }),
+      pos({ holdingId: 3, value: 1_000_000, expenseRatio: 0.05, label: "Other index", mix: { bonds: 1 } }),
+      pos({ holdingId: 4, value: 1_000_000, expenseRatio: 0.15, label: "Fair" }),
+    ]);
+    expect(f.expensive.map((e) => e.label)).toEqual(["Pricey blend"]);
+    expect(f.expensive[0]!.cheaperHeld).toEqual({ label: "Index", expenseRatio: 0.03 });
+  });
+});
+
 describe("location, fees", () => {
   it("suggests holding bonds in pre-tax accounts", () => {
     const hints = locationHints([

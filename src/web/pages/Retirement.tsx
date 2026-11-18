@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { RetirementResponse } from "../../shared/api.ts";
+import { useEffect, useState } from "react";
+import type { ClaimingResponse, ExploreResponse, RetirementResponse } from "../../shared/api.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { compactMoney, pct } from "../chartMath.ts";
 import { FanChart } from "../components/charts.tsx";
@@ -178,7 +178,9 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
   const s = data.settings;
   const [target, setTarget] = useState<number | null>(Math.round(s.successTarget * 100));
   const [ord, setOrd] = useState<number | null>(s.ordinaryTaxPct);
+  const [hair, setHair] = useState<number | null>(s.returnHaircutPct);
   const [cg, setCg] = useState<number | null>(s.capitalGainsPct);
+  const [state, setState] = useState<number | null>(s.stateTaxPct);
   const [error, setError] = useState<string>();
   const save = async (patch: Record<string, unknown>) => {
     try {
@@ -199,14 +201,41 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             <NumberInput value={target} min={50} max={99} suffix="%" ariaLabel="Success target" onChange={setTarget} />
           </span>
         </Field>
-        <Field label="Tax on pre-tax withdrawals" hint="Your expected average rate in retirement">
-          <span onBlur={() => ord !== null && ord !== s.ordinaryTaxPct && void save({ ordinaryTaxPct: ord })}>
-            <NumberInput value={ord} min={0} max={60} suffix="%" ariaLabel="Tax on pre-tax withdrawals" onChange={setOrd} />
-          </span>
+        <Field label="How taxes are worked out" hint="Brackets use the federal tax code for your filing status. A flat rate is a simple average.">
+          <select value={s.taxMode} onChange={(e) => void save({ taxMode: e.target.value })} aria-label="How taxes are worked out">
+            <option value="brackets">Federal brackets (recommended)</option>
+            <option value="flat">Flat rates</option>
+          </select>
         </Field>
-        <Field label="Tax on investment gains">
-          <span onBlur={() => cg !== null && cg !== s.capitalGainsPct && void save({ capitalGainsPct: cg })}>
-            <NumberInput value={cg} min={0} max={40} suffix="%" ariaLabel="Tax on investment gains" onChange={setCg} />
+        {s.taxMode === "brackets" ? (
+          <Field label="State income tax" hint="A flat rate on withdrawals and gains. Leave at 0 if your state doesn't tax them.">
+            <span onBlur={() => state !== null && state !== s.stateTaxPct && void save({ stateTaxPct: state })}>
+              <NumberInput value={state} min={0} max={15} step={0.5} suffix="%" ariaLabel="State income tax" onChange={setState} />
+            </span>
+          </Field>
+        ) : (
+          <>
+            <Field label="Tax on pre-tax withdrawals" hint="Your expected average rate in retirement">
+              <span onBlur={() => ord !== null && ord !== s.ordinaryTaxPct && void save({ ordinaryTaxPct: ord })}>
+                <NumberInput value={ord} min={0} max={60} suffix="%" ariaLabel="Tax on pre-tax withdrawals" onChange={setOrd} />
+              </span>
+            </Field>
+            <Field label="Tax on investment gains">
+              <span onBlur={() => cg !== null && cg !== s.capitalGainsPct && void save({ capitalGainsPct: cg })}>
+                <NumberInput value={cg} min={0} max={40} suffix="%" ariaLabel="Tax on investment gains" onChange={setCg} />
+              </span>
+            </Field>
+          </>
+        )}
+        <Field label="Investment mix" hint="Target: your aim, rebalanced every year. What I hold: today's mix, left to drift.">
+          <select value={s.allocationSource} onChange={(e) => void save({ allocationSource: e.target.value })} aria-label="Investment mix used">
+            <option value="target">My target mix</option>
+            <option value="actual">What I hold today</option>
+          </select>
+        </Field>
+        <Field label="Returns stress" hint="Take this many points off every stock and bond return, every year, to plan for a worse future than history">
+          <span onBlur={() => hair !== null && hair !== s.returnHaircutPct && void save({ returnHaircutPct: hair })}>
+            <NumberInput value={hair} min={0} max={5} step={0.5} suffix="points" ariaLabel="Returns stress" onChange={setHair} />
           </span>
         </Field>
         <label className="check wide">
@@ -218,7 +247,8 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
       <ul className="small muted assumptions">
         <li>
           {s.runs.toLocaleString("en-US")} simulated futures, each replaying history in random {s.blockLength}-year blocks: stock, bond and cash
-          returns and inflation come from the same real year, so crashes and inflation spikes keep their real company.
+          returns and inflation come from the same real year, so crashes and inflation spikes keep their real company. A block that reaches the
+          end of the data starts over; no run jumps from the latest year back to 1928.
         </li>
         <li>Everything is in today's dollars. Social Security keeps up with inflation; pensions without a COLA don't.</li>
         <li>
@@ -232,9 +262,129 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
         <li>
           Market data: {data.sources.returns} ({data.sources.returnsYears}). Required minimums: {data.sources.rmd}
         </li>
-        <li>Not included yet: tax brackets, Roth conversions, Medicare surcharges, spousal Social Security benefits.</li>
+        <li>
+          {s.taxMode === "brackets"
+            ? `Taxes follow the federal brackets, standard deduction, 0/15/20% gains rates and partial taxation of Social Security (${data.sources.tax}).`
+            : "Taxes use the two flat rates above."}
+        </li>
+        <li>Not included yet: Roth conversions, the extra deduction at 65+, Medicare surcharges, tax drag while saving, spousal Social Security benefits.</li>
       </ul>
     </details>
+  );
+}
+
+/** Three dials, answered live with the same random years as the headline. */
+function TryPanel({ endYear, birthYear }: { endYear: number; birthYear: number }) {
+  const [shift, setShift] = useState(0);
+  const [spend, setSpend] = useState(100);
+  const [extra, setExtra] = useState(0);
+  const [res, setRes] = useState<ExploreResponse>();
+  const [error, setError] = useState<string>();
+  const untouched = shift === 0 && spend === 100 && extra === 0;
+
+  useEffect(() => {
+    if (untouched) return;
+    let current = true;
+    const t = setTimeout(async () => {
+      try {
+        const r = await api<ExploreResponse>("POST", "/api/retirement/explore", { retireShiftYears: shift, spendingPct: spend, extraMonthly: extra * 100 });
+        if (current) {
+          setRes(r);
+          setError(undefined);
+        }
+      } catch (err) {
+        if (current) setError(errorMessage(err));
+      }
+    }, 350);
+    return () => {
+      current = false;
+      clearTimeout(t);
+    };
+  }, [shift, spend, extra, untouched]);
+
+  const c = !untouched && res && res.ready ? res : undefined;
+  const delta = c ? Math.round((c.changed.successRate - c.base.successRate) * 1000) / 10 : 0;
+  return (
+    <section className="panel tight">
+      <h2>Try a change</h2>
+      <p className="muted small">Move a dial to see what it would do. Nothing is saved.</p>
+      <div className="dials">
+        <label className="dial">
+          <span className="field-label">Retire {shift === 0 ? "as planned" : shift > 0 ? `${shift} year${shift === 1 ? "" : "s"} later` : `${-shift} year${shift === -1 ? "" : "s"} earlier`}</span>
+          <input type="range" min={-5} max={5} step={1} value={shift} onChange={(e) => setShift(Number(e.target.value))} aria-label="Years earlier or later" />
+        </label>
+        <label className="dial">
+          <span className="field-label">Spend {spend === 100 ? "as planned" : `${spend}% of plan`} in retirement</span>
+          <input type="range" min={70} max={130} step={5} value={spend} onChange={(e) => setSpend(Number(e.target.value))} aria-label="Retirement spending as a percent of the plan" />
+        </label>
+        <label className="dial">
+          <span className="field-label">Save {extra === 0 ? "nothing extra" : `$${extra.toLocaleString("en-US")} more`} a month</span>
+          <input type="range" min={0} max={3000} step={100} value={extra} onChange={(e) => setExtra(Number(e.target.value))} aria-label="Extra monthly saving" />
+        </label>
+      </div>
+      <ErrorNote message={error} />
+      {untouched && <p className="muted small">Planning to age {endYear - birthYear}.</p>}
+      {c && (
+        <p className="dial-result" aria-live="polite">
+          <strong>{pct(c.changed.successRate)}</strong> chance your money lasts{" "}
+          <span className={`delta ${delta >= 0 ? "up" : "down"}`}>
+            ({delta >= 0 ? "+" : ""}
+            {delta} points)
+          </span>
+          . Median portfolio at {endYear - birthYear}: {money(c.changed.medianAtEnd)}. Retirement starts {c.changed.retireYear}.{" "}
+          <span className="muted small">
+            ±{Math.round(((c.changed.successInterval[1] - c.changed.successInterval[0]) / 2) * 100)} points from the number of runs.
+          </span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ClaimingPanel() {
+  const claiming = useApi<ClaimingResponse>("/api/retirement/claiming");
+  const c = claiming.data;
+  if (!c || !c.ready || c.people.length === 0) return null;
+  return (
+    <section className="panel tight">
+      <h2>When to claim Social Security</h2>
+      <p className="muted small">
+        Chance your money lasts for each claim age, with everything else unchanged. Waiting pays more each month but means drawing on savings
+        longer first. It does not include spousal or survivor benefits yet.
+      </p>
+      {c.people.map((p) => {
+        const best = Math.max(...p.options.map((o) => o.successRate));
+        return (
+          <div key={p.id}>
+            <strong>{p.name}</strong> <span className="muted small">plans to claim at {p.planned}</span>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Claim at</th>
+                  <th className="num">Monthly</th>
+                  <th className="num">Chance it lasts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {p.options.map((o) => (
+                  <tr key={o.age} className={o.age === p.planned ? "current" : undefined}>
+                    <td>
+                      {o.age}
+                      {o.age === p.planned && <span className="muted small"> (planned)</span>}
+                    </td>
+                    <td className="num">{money(o.monthly)}</td>
+                    <td className="num">
+                      {pct(o.successRate)}
+                      {o.successRate === best && o.successRate > 0 && <span className="muted small"> best</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -290,6 +440,10 @@ export function RetirementPage() {
               {i.endYear}.
             </span>
           </p>
+          <p className="muted small">
+            With this many runs the number is good to about ±{Math.round(((r.successInterval[1] - r.successInterval[0]) / 2) * 100)} points
+            ({pct(r.successInterval[0])}–{pct(r.successInterval[1])}). The history it draws on is short, so treat small gaps as ties.
+          </p>
           <span className="mix-bar hero-bar" role="img" aria-label={`${pct(r.successRate)} chance of success; target ${pct(target)}`}>
             <span className="mix-fill" style={{ width: `${r.successRate * 100}%` }} />
             <span className="mix-target" style={{ left: `${target * 100}%` }} />
@@ -309,10 +463,48 @@ export function RetirementPage() {
           </div>
           <div>
             <dt>In the runs that fall short</dt>
-            <dd>{r.medianDepletionYear === null ? "None do" : `money runs out around age ${ageOf(r.medianDepletionYear)} (median)`}</dd>
+            <dd>
+              {r.medianDepletionYear === null
+                ? "None do"
+                : `money runs out around age ${ageOf(r.medianDepletionYear)} (median)${r.earlyDepletionYear !== null ? `, as early as ${ageOf(r.earlyDepletionYear)} in the worst tenth` : ""}`}
+            </dd>
           </div>
+          {r.fragileRate >= 0.01 && (
+            <div>
+              <dt>Close calls</dt>
+              <dd>{pct(r.fragileRate)} of futures last but end with under 3 years of spending left</dd>
+            </div>
+          )}
         </dl>
       </section>
+
+      {d.checks && (
+        <section className="panel tight">
+          <h2>Other ways to look at it</h2>
+          <dl className="hero-facts">
+            <div>
+              <dt>Living each real start year in order</dt>
+              <dd>
+                {pct(d.checks.replay.successRate)}{" "}
+                <span className="muted small">of {d.checks.replay.startYears} historical starts (the classic safe-withdrawal method)</span>
+              </dd>
+            </div>
+            <div>
+              <dt>If returns are {d.checks.stress.haircutPct} point a year lower</dt>
+              <dd>{pct(d.checks.stress.successRate)}</dd>
+            </div>
+          </dl>
+          <p className="muted small">
+            Different methods answer slightly different questions. If they agree, trust the number more; if they split, the plan is more
+            sensitive to what the future looks like than one figure suggests. What-if answers below use {d.checks.whatIfRuns.toLocaleString("en-US")} runs, so
+            they are approximate near the target.
+          </p>
+        </section>
+      )}
+
+      <TryPanel endYear={i.endYear} birthYear={primary.birthYear} />
+
+      <ClaimingPanel />
 
       {d.events.length > 0 && (
         <section className="panel">

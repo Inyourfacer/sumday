@@ -1,7 +1,7 @@
 /**
  * Monte Carlo retirement simulation (DESIGN §11.2).
  *
- * Each run replays history in random blocks: a year's stock, bond and
+ * Each run replays history in random blocks (never wrapping 2025 back to 1928): a year's stock, bond and
  * T-bill returns and inflation are drawn together from one real historical
  * year, so crashes, bond slumps and inflation spikes keep their real
  * company; blocks of consecutive years keep bad stretches together.
@@ -16,6 +16,7 @@
  */
 import { matchValue } from "../plan/waterfall.ts";
 import { requiredMinimum, seededRandom, type RmdTable } from "./rules.ts";
+import { incomeTax, type TaxSetup } from "./tax.ts";
 
 export interface HistoricalYear {
   year: number;
@@ -46,6 +47,12 @@ export interface SimPerson {
 
 export interface SimInput {
   startYear: number;
+  /**
+   * Share of `startYear` still to come (0–1, default 1). Balances already
+   * include this year's activity so far, so the first simulated year only
+   * adds the remaining contributions, spending and growth.
+   */
+  yearFraction?: number;
   /** Last year simulated (inclusive). */
   endYear: number;
   people: SimPerson[];
@@ -71,11 +78,18 @@ export interface SimInput {
    * (a down payment, a wedding).
    */
   lumpSums?: { year: number; amount: number }[];
-  taxes: { ordinaryPct: number; capitalGainsPct: number };
+  /**
+   * With `brackets`, withdrawals in retirement are taxed from the tax code (brackets,
+   * standard deduction, gains stacked on ordinary income, Social Security taxation).
+   * The flat percentages then only price lump-sum expenses.
+   */
+  taxes: { ordinaryPct: number; capitalGainsPct: number; brackets?: TaxSetup };
   history: readonly HistoricalYear[];
   rmd: RmdTable;
   runs: number;
   blockLength: number;
+  /** Percentage points taken off every stock and bond return, to test a worse future than history (default 0). */
+  returnHaircutPct?: number;
   seed: number;
 }
 
@@ -100,6 +114,23 @@ export interface SimResult {
   /** Of failed runs, the median year the money ran out. */
   medianDepletionYear: number | null;
   failedRuns: number;
+  /** 95% interval for `successRate` from the number of runs (Wilson). */
+  successInterval: [number, number];
+  /** Of failed runs, the year by which the earliest tenth had run out. */
+  earlyDepletionYear: number | null;
+  /** Share of runs that last to the end but finish with under three years of spending left. */
+  fragileRate: number;
+}
+
+/** 95% Wilson interval for a share seen in `n` runs. */
+export function wilson(successes: number, n: number): [number, number] {
+  if (n === 0) return [0, 1];
+  const z = 1.96;
+  const p = successes / n;
+  const denom = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return [Math.max(0, centre - half), Math.min(1, centre + half)];
 }
 
 /** When spending starts: the year the last person with a paycheck retires (or this year if nobody works). */
@@ -109,12 +140,16 @@ export function retirementYear(input: Pick<SimInput, "people" | "startYear">): n
   return Math.max(input.startYear, ...workers.map((p) => p.birthYear + p.retirementAge));
 }
 
-/** Indices into history for one run: circular blocks of consecutive years. */
+/**
+ * Indices into history for one run: blocks of consecutive years. A block that
+ * reaches the last year of history ends there and a new one starts, so no run
+ * joins 2025 to 1928, a sequence that never happened.
+ */
 function sequence(n: number, length: number, block: number, rand: () => number): number[] {
   const out: number[] = [];
   while (out.length < length) {
     const start = Math.floor(rand() * n);
-    for (let k = 0; k < block && out.length < length; k++) out.push((start + k) % n);
+    for (let k = 0; k < block && start + k < n && out.length < length; k++) out.push(start + k);
   }
   return out;
 }
@@ -180,6 +215,130 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     }
     return need;
   };
+  /** Flat-rate retirement year: spending minus income, grossed up at a flat rate. */
+  const retireFlat = (t: number, f: number): boolean => {
+    const year = input.startYear + t;
+    let need = f * (input.spending[t] ?? 0);
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (p.socialSecurity !== null && age >= p.claimAge) need -= f * p.socialSecurity * 12;
+      if (p.pension && age >= p.pension.startAge) need -= (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+    }
+
+    // Required minimums come out whether needed or not; any extra is reinvested.
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (age < p.rmdStartAge || trad[k]! <= 0) continue;
+      const rmd = Math.min(trad[k]!, f * requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
+      if (rmd <= 0) continue;
+      trad[k] = trad[k]! - rmd;
+      const net = rmd * (1 - ord);
+      if (net > need) {
+        const surplus = net - Math.max(0, need);
+        taxable += surplus;
+        basisNominal += surplus * cumInfl;
+        need = 0;
+      } else need -= net;
+    }
+
+    return withdraw(need) <= 0.5;
+  };
+
+  /**
+   * Bracket-taxed retirement year. Income that is already coming (Social Security,
+   * pensions, required minimums) is taxed first; then the extra needed is drawn
+   * from taxable, pre-tax, Roth and HSA in that order, with the amount found so
+   * that spending is met after the tax that draw itself causes.
+   */
+  const retireWithBrackets = (setup: TaxSetup, t: number, f: number): boolean => {
+    const year = input.startYear + t;
+    const spend = f * (input.spending[t] ?? 0);
+    let ss = 0;
+    let pension = 0;
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (p.socialSecurity !== null && age >= p.claimAge) ss += f * p.socialSecurity * 12;
+      if (p.pension && age >= p.pension.startAge) pension += (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+    }
+    let rmdGross = 0;
+    for (let k = 0; k < n; k++) {
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      if (age < p.rmdStartAge || trad[k]! <= 0) continue;
+      const rmd = Math.min(trad[k]!, f * requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
+      if (rmd <= 0) continue;
+      trad[k] = trad[k]! - rmd;
+      rmdGross += rmd;
+    }
+    // A partial first year is taxed as the whole year it would be, then scaled back.
+    const taxOn = (ordinary: number, gains: number): number => {
+      const full = incomeTax({ ordinary: ordinary / f, socialSecurity: ss / f, gains: gains / f }, setup, cumInfl).total;
+      return full * f;
+    };
+    const cash = ss + pension + rmdGross;
+    const basisReal = Math.min(taxable, basisNominal / cumInfl);
+    const gainShare = taxable > 0 ? Math.max(0, 1 - basisReal / taxable) : 0;
+    let tradTotal = 0;
+    for (let k = 0; k < n; k++) tradTotal += trad[k]!;
+
+    /** What drawing `g` in total (taxable, then pre-tax, Roth, HSA) leaves after tax, and the split. */
+    const draw = (g: number) => {
+      const fromTaxable = Math.min(g, taxable);
+      let rest = g - fromTaxable;
+      const fromTrad = Math.min(rest, tradTotal);
+      rest -= fromTrad;
+      const fromRoth = Math.min(rest, roth);
+      rest -= fromRoth;
+      const fromHsa = Math.min(rest, hsa);
+      rest -= fromHsa;
+      const tax = taxOn(pension + rmdGross + fromTrad, fromTaxable * gainShare);
+      return { fromTaxable, fromTrad, fromRoth, fromHsa, unmet: rest, net: cash + g - rest - tax };
+    };
+
+    const none = draw(0);
+    if (none.net >= spend) {
+      // Required minimums and income already cover spending: reinvest the surplus.
+      const surplus = none.net - spend;
+      taxable += surplus;
+      basisNominal += surplus * cumInfl;
+      return true;
+    }
+    const all = taxable + tradTotal + roth + hsa;
+    if (draw(all).net < spend - 0.5) return false;
+    // After-tax cash rises steadily with the draw, in straight segments between bracket edges, so a
+    // few Newton steps find it; bisection is the fallback if a bracket edge makes it hop.
+    let g = Math.min(all, Math.max(0, spend - cash));
+    let d = draw(g);
+    for (let i = 0; i < 8 && Math.abs(d.net - spend) > 0.5; i++) {
+      const step = Math.max(100, 1e-6 * all);
+      const slope = Math.max(0.3, (draw(Math.min(all, g + step)).net - d.net) / step);
+      g = Math.min(all, Math.max(0, g + (spend - d.net) / slope));
+      d = draw(g);
+    }
+    if (d.net < spend - 0.5 || d.net > spend + 50) {
+      let lo = 0;
+      let hi = all;
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (draw(mid).net >= spend) hi = mid;
+        else lo = mid;
+      }
+      g = hi;
+      d = draw(g);
+    }
+    if (d.fromTaxable > 0) {
+      basisNominal *= 1 - d.fromTaxable / taxable;
+      taxable -= d.fromTaxable;
+    }
+    if (d.fromTrad > 0) for (let k = 0; k < n; k++) trad[k] = trad[k]! - d.fromTrad * (trad[k]! / tradTotal);
+    roth -= d.fromRoth;
+    hsa -= d.fromHsa;
+    return true;
+  };
+
   const lumps = new Map<number, number>();
   for (const l of input.lumpSums ?? []) lumps.set(l.year, (lumps.get(l.year) ?? 0) + l.amount);
 
@@ -188,12 +347,14 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     const h = input.history[years[t]!]!;
     const infl1 = 1 + h.inflation;
     cumInfl *= infl1;
+    // Only the rest of the current year is simulated in year 0.
+    const f = t === 0 ? Math.min(1, Math.max(0, input.yearFraction ?? 1)) : 1;
     if (depletedAt !== null) {
       totals[t] = 0;
       continue;
     }
     const growth =
-      a.stocks * ((1 + h.stocks) / infl1 - 1) + a.bonds * ((1 + h.bonds) / infl1 - 1) + a.cash * ((1 + h.bills) / infl1 - 1) - input.feePct / 100;
+      a.stocks * ((1 + h.stocks) / infl1 - 1) + a.bonds * ((1 + h.bonds) / infl1 - 1) + a.cash * ((1 + h.bills) / infl1 - 1) - input.feePct / 100 - ((a.stocks + a.bonds) * (input.returnHaircutPct ?? 0)) / 100;
 
     // Working years: contributions in.
     let anyoneWorking = false;
@@ -202,19 +363,19 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       const income = pay[k]!;
       if (income > 0 && year - p.birthYear < p.retirementAge) {
         anyoneWorking = true;
-        trad[k] = trad[k]! + income * (p.pretaxPct / 100) + income * matchShare[k]!;
-        roth += income * (p.rothPct / 100);
-        hsa += p.hsaPayroll;
+        trad[k] = trad[k]! + f * (income * (p.pretaxPct / 100) + income * matchShare[k]!);
+        roth += f * income * (p.rothPct / 100);
+        hsa += f * p.hsaPayroll;
         // Next year's pay: the raise, less this year's inflation.
         pay[k] = income * ((1 + p.raisePct / 100) / infl1);
       }
     }
     if (anyoneWorking) {
-      taxable += extra.taxable;
-      basisNominal += extra.taxable * cumInfl;
-      roth += extra.roth;
-      hsa += extra.hsa;
-      for (let k = 0; k < n; k++) trad[k] = trad[k]! + extraTrad[k]!;
+      taxable += f * extra.taxable;
+      basisNominal += f * extra.taxable * cumInfl;
+      roth += f * extra.roth;
+      hsa += f * extra.hsa;
+      for (let k = 0; k < n; k++) trad[k] = trad[k]! + f * extraTrad[k]!;
     }
 
     // One-time amounts this year.
@@ -230,33 +391,8 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
 
     // Retirement: withdraw what income doesn't cover.
     if (year >= retireYear) {
-      let need = input.spending[t] ?? 0;
-      for (let k = 0; k < n; k++) {
-        const p = people[k]!;
-        const age = year - p.birthYear;
-        if (p.socialSecurity !== null && age >= p.claimAge) need -= p.socialSecurity * 12;
-        if (p.pension && age >= p.pension.startAge) need -= (p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
-      }
-
-      // Required minimums come out whether needed or not; any extra is reinvested.
-      for (let k = 0; k < n; k++) {
-        const p = people[k]!;
-        const age = year - p.birthYear;
-        if (age < p.rmdStartAge || trad[k]! <= 0) continue;
-        const rmd = Math.min(trad[k]!, requiredMinimum(input.rmd, age, Math.round(trad[k]!)));
-        if (rmd <= 0) continue;
-        trad[k] = trad[k]! - (rmd);
-        const net = rmd * (1 - ord);
-        if (net > need) {
-          const surplus = net - Math.max(0, need);
-          taxable += surplus;
-          basisNominal += surplus * cumInfl;
-          need = 0;
-        } else need -= net;
-      }
-
-      need = withdraw(need);
-      if (need > 0.5) {
+      const funded = input.taxes.brackets ? retireWithBrackets(input.taxes.brackets, t, f) : retireFlat(t, f);
+      if (!funded) {
         depletedAt = year;
         totals[t] = 0;
         continue;
@@ -264,7 +400,7 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     }
 
     // Growth for the year.
-    const g = 1 + growth;
+    const g = f === 1 ? 1 + growth : (1 + growth) ** f;
     taxable *= g;
     roth *= g;
     hsa *= g;
@@ -291,13 +427,17 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
   const wantBands = options.bands ?? true;
   const columns = wantBands ? Array.from({ length: T }, () => new Float64Array(input.runs)) : [];
   let successes = 0;
+  let fragile = 0;
+  const lastSpend = input.spending.at(-1) ?? 0;
   const depletion: number[] = [];
 
   for (let r = 0; r < input.runs; r++) {
     const years = sequence(input.history.length, T, Math.max(1, input.blockLength), rand);
     const { totals, depletedAt } = runPath(input, years, retireYear);
-    if (depletedAt === null) successes += 1;
-    else depletion.push(depletedAt);
+    if (depletedAt === null) {
+      successes += 1;
+      if (totals[T - 1]! < 3 * lastSpend) fragile += 1;
+    } else depletion.push(depletedAt);
     if (wantBands) for (let t = 0; t < T; t++) columns[t]![r] = totals[t]!;
   }
 
@@ -323,7 +463,27 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
     medianAtEnd: bands.at(-1)?.p50 ?? 0,
     medianDepletionYear: depletion.length ? depletion[Math.floor(depletion.length / 2)]! : null,
     failedRuns: depletion.length,
+    successInterval: wilson(successes, input.runs),
+    earlyDepletionYear: depletion.length ? depletion[Math.floor(depletion.length / 10)]! : null,
+    fragileRate: fragile / input.runs,
   };
+}
+
+/**
+ * Replay every real historical start year in order (no randomness): the same
+ * plan lived through 1928, 1929, 1930 and so on, as long as history lasts.
+ * The classic way safe-withdrawal studies are run, so results can be checked
+ * against published numbers.
+ */
+export function historicalReplay(input: SimInput): { successRate: number; cohorts: { startYear: number; success: boolean }[] } {
+  const T = Math.max(1, input.endYear - input.startYear + 1);
+  const retireYear = retirementYear(input);
+  const cohorts: { startYear: number; success: boolean }[] = [];
+  for (let s = 0; s + T <= input.history.length; s++) {
+    const years = Array.from({ length: T }, (_, k) => s + k);
+    cohorts.push({ startYear: input.history[s]!.year, success: runPath(input, years, retireYear).depletedAt === null });
+  }
+  return { successRate: cohorts.length ? cohorts.filter((c) => c.success).length / cohorts.length : 0, cohorts };
 }
 
 /**
