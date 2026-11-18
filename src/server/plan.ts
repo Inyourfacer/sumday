@@ -599,7 +599,10 @@ export function registerPlanRoutes(app: FastifyInstance, db: Db): void {
     const b = amounts(then);
     const keys = [...new Set([...a.keys(), ...b.keys()])];
     const changes = keys
-      .map((key) => ({ key, title: (b.get(key) ?? a.get(key))!.title, before: a.get(key)?.amount ?? 0, after: b.get(key)?.amount ?? 0 }))
+      .map((key) => {
+        const rec = (b.get(key) ?? a.get(key))!;
+        return { key, step: rec.step, title: rec.title, before: a.get(key)?.amount ?? 0, after: b.get(key)?.amount ?? 0 };
+      })
       .filter((c) => c.before !== c.after)
       .sort((x, y) => Math.abs(y.after - y.before) - Math.abs(x.after - x.before));
     return { changes } satisfies PlanPreviewResponse;

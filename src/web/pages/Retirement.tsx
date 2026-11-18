@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { ClaimingResponse, RetirementResponse } from "../../shared/api.ts";
+import { useEffect, useState } from "react";
+import type { ClaimingResponse, ExploreResponse, RetirementResponse } from "../../shared/api.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { compactMoney, pct } from "../chartMath.ts";
 import { FanChart } from "../components/charts.tsx";
@@ -245,6 +245,74 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
   );
 }
 
+/** Three dials, answered live with the same random years as the headline. */
+function TryPanel({ endYear, birthYear }: { endYear: number; birthYear: number }) {
+  const [shift, setShift] = useState(0);
+  const [spend, setSpend] = useState(100);
+  const [extra, setExtra] = useState(0);
+  const [res, setRes] = useState<ExploreResponse>();
+  const [error, setError] = useState<string>();
+  const untouched = shift === 0 && spend === 100 && extra === 0;
+
+  useEffect(() => {
+    if (untouched) return;
+    let current = true;
+    const t = setTimeout(async () => {
+      try {
+        const r = await api<ExploreResponse>("POST", "/api/retirement/explore", { retireShiftYears: shift, spendingPct: spend, extraMonthly: extra * 100 });
+        if (current) {
+          setRes(r);
+          setError(undefined);
+        }
+      } catch (err) {
+        if (current) setError(errorMessage(err));
+      }
+    }, 350);
+    return () => {
+      current = false;
+      clearTimeout(t);
+    };
+  }, [shift, spend, extra, untouched]);
+
+  const c = !untouched && res && res.ready ? res : undefined;
+  const delta = c ? Math.round((c.changed.successRate - c.base.successRate) * 1000) / 10 : 0;
+  return (
+    <section className="panel tight">
+      <h2>Try a change</h2>
+      <p className="muted small">Move a dial to see what it would do. Nothing is saved.</p>
+      <div className="dials">
+        <label className="dial">
+          <span className="field-label">Retire {shift === 0 ? "as planned" : shift > 0 ? `${shift} year${shift === 1 ? "" : "s"} later` : `${-shift} year${shift === -1 ? "" : "s"} earlier`}</span>
+          <input type="range" min={-5} max={5} step={1} value={shift} onChange={(e) => setShift(Number(e.target.value))} aria-label="Years earlier or later" />
+        </label>
+        <label className="dial">
+          <span className="field-label">Spend {spend === 100 ? "as planned" : `${spend}% of plan`} in retirement</span>
+          <input type="range" min={70} max={130} step={5} value={spend} onChange={(e) => setSpend(Number(e.target.value))} aria-label="Retirement spending as a percent of the plan" />
+        </label>
+        <label className="dial">
+          <span className="field-label">Save {extra === 0 ? "nothing extra" : `$${extra.toLocaleString("en-US")} more`} a month</span>
+          <input type="range" min={0} max={3000} step={100} value={extra} onChange={(e) => setExtra(Number(e.target.value))} aria-label="Extra monthly saving" />
+        </label>
+      </div>
+      <ErrorNote message={error} />
+      {untouched && <p className="muted small">Planning to age {endYear - birthYear}.</p>}
+      {c && (
+        <p className="dial-result" aria-live="polite">
+          <strong>{pct(c.changed.successRate)}</strong> chance your money lasts{" "}
+          <span className={`delta ${delta >= 0 ? "up" : "down"}`}>
+            ({delta >= 0 ? "+" : ""}
+            {delta} points)
+          </span>
+          . Median portfolio at {endYear - birthYear}: {money(c.changed.medianAtEnd)}. Retirement starts {c.changed.retireYear}.{" "}
+          <span className="muted small">
+            ±{Math.round(((c.changed.successInterval[1] - c.changed.successInterval[0]) / 2) * 100)} points from the number of runs.
+          </span>
+        </p>
+      )}
+    </section>
+  );
+}
+
 function ClaimingPanel() {
   const claiming = useApi<ClaimingResponse>("/api/retirement/claiming");
   const c = claiming.data;
@@ -405,6 +473,8 @@ export function RetirementPage() {
           </p>
         </section>
       )}
+
+      <TryPanel endYear={i.endYear} birthYear={primary.birthYear} />
 
       <ClaimingPanel />
 

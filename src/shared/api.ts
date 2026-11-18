@@ -28,7 +28,7 @@ export interface PlanSettings {
 
 /** What each move would become under a different step order. */
 export interface PlanPreviewResponse {
-  changes: { key: string; title: string; before: number; after: number }[];
+  changes: { key: string; step: StepId; title: string; before: number; after: number }[];
 }
 
 /** What each move is worth to retirement (see server/moveImpact.ts). */
@@ -168,6 +168,40 @@ export interface HoldingsImportResult {
   removed: number;
   skipped: { line: number; reason: string }[];
   value: number;
+}
+
+/** "Try a change" (POST /api/retirement/explore). */
+export type ExploreResponse =
+  | { ready: false }
+  | {
+      ready: true;
+      runs: number;
+      /** The plan as it stands, from the same runs, so the difference is clean. */
+      base: { successRate: number };
+      changed: {
+        successRate: number;
+        successInterval: [number, number];
+        retireYear: number;
+        medianAtRetirement: number;
+        medianAtEnd: number;
+        bands: import("../engine/retire/montecarlo.ts").YearBand[];
+      };
+    };
+
+export interface AssumptionRow {
+  area: string;
+  label: string;
+  value: string;
+  /** you = entered by you; default = Sumday's starting value; estimated = worked out from your data; guess = inferred; missing = needed but empty. */
+  source: "you" | "default" | "estimated" | "guess" | "missing";
+  note?: string | undefined;
+  link: string;
+}
+
+export interface AssumptionsResponse {
+  rows: AssumptionRow[];
+  /** How far the chance of success moves, in points, when one lever changes. Biggest effect first. */
+  sensitivity: { label: string; successPoints: number }[];
 }
 
 /** Success by Social Security claim age, per person (GET /api/retirement/claiming). */

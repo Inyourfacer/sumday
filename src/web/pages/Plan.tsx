@@ -3,6 +3,7 @@ import type { MoveImpactsResponse, PlanPreviewResponse, PlanResponse, Recommenda
 import { STEP_TEMPLATES, STEP_TITLES } from "../../engine/plan/waterfall.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { monthTitle } from "../chartMath.ts";
+import { MoneyFlow, type FlowSegment } from "../components/MoneyFlow.tsx";
 import { ErrorNote, Field, Loading, MoneyInput, NumberInput, PageHeader } from "../components/ui.tsx";
 import { formatFact } from "../facts.ts";
 import { formatDate, formatMoney } from "../format.ts";
@@ -19,6 +20,25 @@ const STATUS_LABEL: Record<Recommendation["status"], string> = {
 
 type MoveAction = "done" | "snooze" | "dismiss" | "restore";
 type Impact = MoveImpactsResponse["impacts"][number];
+
+/** Bills, everyday spending, each step that takes money, and what's left. */
+function flowSegments(p: PlanResponse): FlowSegment[] {
+  const { basis, result } = p;
+  const out: FlowSegment[] = [
+    { label: "Fixed bills", amount: basis.fixed, tone: "bills" },
+    { label: "Non-monthly set-aside", amount: basis.nonMonthly, tone: "bills" },
+    { label: "Everyday spending", amount: basis.flex, tone: "flex" },
+  ];
+  // Fold per-person and per-debt lines of one step into a single segment.
+  const byStep = new Map<string, number>();
+  for (const r of result.recommendations) if (r.amount > 0) byStep.set(r.step, (byStep.get(r.step) ?? 0) + r.amount);
+  for (const [step, amount] of byStep) out.push({ label: STEP_TITLES[step as keyof typeof STEP_TITLES], amount, tone: "step" });
+  if (basis.override === null) {
+    const left = result.leftover;
+    if (left > 0) out.push({ label: "Not allocated", amount: left, tone: "left" });
+  }
+  return out;
+}
 
 function Move({ rec, index, impact, onAct }: { rec: Recommendation; index: number; impact?: Impact; onAct: (key: string, action: MoveAction) => void }) {
   const away = rec.userState;
@@ -213,6 +233,13 @@ export function PlanPage() {
         </section>
       )}
 
+      {result.available !== null && basis.expectedIncome !== null && (
+        <section className="panel tight">
+          <h2>Where this month's income goes</h2>
+          <MoneyFlow income={basis.expectedIncome} segments={flowSegments(p)} />
+        </section>
+      )}
+
       {moves.length > 0 && (
         <section>
           <h2 className="section-title">This month</h2>
@@ -304,7 +331,28 @@ function PlanSettingsPanel({
   const [steps, setSteps] = useState(s.steps);
   const saveSteps = (next: PlanResponse["settings"]["steps"]) => {
     setSteps(next);
+    setPending(undefined);
     void onSave({ steps: next });
+  };
+  // Changing the order or turning a step on or off is previewed first: what each move becomes, before anything is saved.
+  const [pending, setPending] = useState<PlanPreviewResponse["changes"]>();
+  const [dragFrom, setDragFrom] = useState<number>();
+  const propose = async (next: PlanResponse["settings"]["steps"]) => {
+    setSteps(next);
+    try {
+      const res = await api<PlanPreviewResponse>("POST", "/api/plan/preview", { steps: next });
+      setPending(res.changes);
+      setPreviewError(undefined);
+    } catch (err) {
+      setPreviewError(errorMessage(err));
+    }
+  };
+  const reorder = (from: number, to: number) => {
+    if (from === to) return;
+    const next = [...steps];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item!);
+    void propose(next);
   };
   const [starter, setStarter] = useState<number | null>(s.starterAmount);
   const [apr, setApr] = useState<number | null>(s.highInterestApr);
@@ -329,10 +377,7 @@ function PlanSettingsPanel({
   };
 
   const move = (i: number, delta: -1 | 1) => {
-    const next = [...steps];
-    const [item] = next.splice(i, 1);
-    next.splice(i + delta, 0, item!);
-    saveSteps(next);
+    reorder(i, i + delta);
   };
 
   return (
@@ -365,7 +410,9 @@ function PlanSettingsPanel({
               <ul className="mini-list">
                 {preview.changes.map((c) => (
                   <li key={c.key}>
-                    <span>{c.title}</span>
+                    <span>
+                      {c.title} <span className="muted small">· {STEP_TITLES[c.step]}</span>
+                    </span>
                     <span>
                       {formatMoney(c.before, { cents: false })} → {formatMoney(c.after, { cents: false })}/mo
                     </span>
@@ -390,12 +437,27 @@ function PlanSettingsPanel({
       </div>
       <ol className="step-order">
         {steps.map((step, i) => (
-          <li key={step.id}>
+          <li
+            key={step.id}
+            className={dragFrom === i ? "dragging" : undefined}
+            draggable
+            onDragStart={() => setDragFrom(i)}
+            onDragEnd={() => setDragFrom(undefined)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragFrom !== undefined) reorder(dragFrom, i);
+              setDragFrom(undefined);
+            }}
+          >
+            <span className="drag-handle" aria-hidden title="Drag to reorder">
+              ⋮⋮
+            </span>
             <label className="check">
               <input
                 type="checkbox"
                 checked={step.enabled}
-                onChange={(e) => saveSteps(steps.map((x) => (x.id === step.id ? { ...x, enabled: e.target.checked } : x)))}
+                onChange={(e) => void propose(steps.map((x) => (x.id === step.id ? { ...x, enabled: e.target.checked } : x)))}
               />
               {i + 1}. {STEP_TITLES[step.id]}
             </label>
@@ -416,6 +478,40 @@ function PlanSettingsPanel({
           </li>
         ))}
       </ol>
+      {pending && (
+        <div className="panel tight" role="status">
+          <strong>With this order, this month</strong>
+          {pending.length === 0 ? (
+            <p className="muted small">Nothing changes with your current numbers.</p>
+          ) : (
+            <ul className="mini-list">
+              {pending.map((c) => (
+                <li key={c.key}>
+                  <span>
+                    {c.title} <span className="muted small">· {STEP_TITLES[c.step]}</span>
+                  </span>
+                  <span>
+                    {formatMoney(c.before, { cents: false })} → {formatMoney(c.after, { cents: false })}/mo
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <button type="button" onClick={() => saveSteps(steps)}>
+            Use this order
+          </button>{" "}
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              setSteps(s.steps);
+              setPending(undefined);
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      )}
       <div className="form-grid">
         <Field label="Starter emergency fund">
           <span onBlur={() => starter !== null && starter !== s.starterAmount && void onSave({ starterAmount: starter })}>

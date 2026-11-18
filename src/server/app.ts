@@ -6,6 +6,8 @@ import { registerAccountRoutes } from "./accounts.ts";
 import { registerBudgetRoutes } from "./budget.ts";
 import { registerPlanRoutes } from "./plan.ts";
 import { registerMoveImpactRoutes } from "./moveImpact.ts";
+import { registerExploreRoutes } from "./explore.ts";
+import { registerAssumptionRoutes } from "./assumptions.ts";
 import { registerInvestmentRoutes } from "./investments.ts";
 import { registerRetirementRoutes } from "./retirement.ts";
 import { registerScenarioRoutes } from "./scenarios.ts";
@@ -74,6 +76,8 @@ export async function buildApp({ db, webDir, logger = false, priceProvider, back
   registerInvestmentRoutes(app, db, prices);
   registerRetirementRoutes(app, db);
   registerMoveImpactRoutes(app, db);
+  registerExploreRoutes(app, db);
+  registerAssumptionRoutes(app, db);
   registerScenarioRoutes(app, db);
   registerAlertRoutes(app, db);
   registerReportRoutes(app, db);

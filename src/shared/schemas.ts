@@ -331,6 +331,11 @@ export const planSettingsSchema = z.object({
   /** Marginal income-tax rate (%), so pre-tax payroll steps are priced at their take-home cost. null = not set. */
   marginalTaxPct: z.number().min(0).max(60).nullable().optional(),
 });
+export const exploreSchema = z.object({
+  retireShiftYears: z.number().int().min(-10).max(10).default(0),
+  spendingPct: z.number().min(50).max(150).default(100),
+  extraMonthly: cents.refine((v) => v >= 0 && v <= 1_000_000, "Between $0 and $10,000 a month.").default(0),
+});
 export const planPreviewSchema = z.object({ steps: z.array(z.object({ id: z.string(), enabled: z.boolean() })) });
 export const debtQuerySchema = z.object({
   extra: z.coerce.number().int().min(0).max(100_000_000).optional(),

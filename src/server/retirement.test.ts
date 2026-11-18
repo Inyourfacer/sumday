@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextMonth } from "../engine/budget/budget.ts";
-import type { AccountView, BudgetResponse, CategoryView, ClaimingResponse, RetirementResponse } from "../shared/api.ts";
+import type { AccountView, AssumptionsResponse, BudgetResponse, CategoryView, ClaimingResponse, ExploreResponse, RetirementResponse } from "../shared/api.ts";
 import { buildApp } from "./app.ts";
 import { openDb, type Db } from "./db.ts";
 
@@ -122,6 +122,45 @@ describe("retirement", () => {
     const worse = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { returnHaircutPct: 2 });
     expect(worse.settings.returnHaircutPct).toBe(2);
     expect(worse.result!.successRate).toBeLessThanOrEqual(r.result!.successRate);
+  });
+
+  it("answers the three dials with the same random years as the headline", async () => {
+    expect((await ok<ExploreResponse>("POST", "/api/retirement/explore", {})).ready).toBe(false);
+    await household();
+    const none = await ok<ExploreResponse>("POST", "/api/retirement/explore", {});
+    if (!none.ready) throw new Error("not ready");
+    // No change: the same chance as the baseline from the same runs.
+    expect(none.changed.successRate).toBe(none.base.successRate);
+    const better = await ok<ExploreResponse>("POST", "/api/retirement/explore", { retireShiftYears: 3, spendingPct: 85, extraMonthly: 100_000 });
+    if (!better.ready) throw new Error("not ready");
+    expect(better.changed.successRate).toBeGreaterThanOrEqual(better.base.successRate);
+    expect(better.changed.retireYear).toBe(none.changed.retireYear + 3);
+    expect(better.changed.bands.length).toBe(none.changed.bands.length);
+    const worse = await ok<ExploreResponse>("POST", "/api/retirement/explore", { spendingPct: 130 });
+    if (!worse.ready) throw new Error("not ready");
+    expect(worse.changed.successRate).toBeLessThanOrEqual(worse.base.successRate);
+    expect((await call("POST", "/api/retirement/explore", { spendingPct: 500 })).status).toBe(400);
+  });
+
+  it("lists every assumption with its source and how much each lever matters", async () => {
+    await household();
+    const a = await ok<AssumptionsResponse>("GET", "/api/assumptions");
+    const row = (label: string) => a.rows.find((r) => r.label === label)!;
+    expect(row("Expected monthly income").source).toBe("missing");
+    expect(row("Starter emergency fund").source).toBe("default");
+    expect(row("Alex: retirement age").source).toBe("you");
+    expect(row("Tax on pre-tax withdrawals").note).toMatch(/No brackets/);
+    expect(a.sensitivity.length).toBe(7);
+    const byLabel = new Map(a.sensitivity.map((s) => [s.label, s.successPoints]));
+    expect(byLabel.get("Retire 2 years later")!).toBeGreaterThanOrEqual(0);
+    expect(byLabel.get("Spend 10% more in retirement")!).toBeLessThanOrEqual(0);
+    expect(byLabel.get("Returns 1 point a year lower")!).toBeLessThanOrEqual(0);
+    // Sorted by size of effect.
+    const sizes = a.sensitivity.map((s) => Math.abs(s.successPoints));
+    expect(sizes).toEqual([...sizes].sort((x, y) => y - x));
+    // Entering a setting changes its source.
+    await ok("PUT", "/api/plan/settings", { starterAmount: 300_000 });
+    expect((await ok<AssumptionsResponse>("GET", "/api/assumptions")).rows.find((r) => r.label === "Starter emergency fund")!.source).toBe("you");
   });
 
   it("compares Social Security claim ages", async () => {
