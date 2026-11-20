@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextMonth } from "../engine/budget/budget.ts";
-import type { AccountView, AssumptionsResponse, BudgetResponse, CategoryView, ClaimingResponse, ExploreResponse, RetirementResponse } from "../shared/api.ts";
+import type { AccountView, AssumptionsResponse, BudgetResponse, CategoryView, ClaimingResponse, ConversionsResponse, ExploreResponse, RetirementResponse } from "../shared/api.ts";
 import { buildApp } from "./app.ts";
 import { openDb, type Db } from "./db.ts";
 
@@ -151,8 +151,9 @@ describe("retirement", () => {
     expect(row("Alex: retirement age").source).toBe("you");
     expect(row("Taxes in retirement").note).toMatch(/2026/);
     expect(row("Taxes in retirement").value).toContain("married joint");
-    expect(a.sensitivity.length).toBe(7);
+    expect(a.sensitivity.length).toBe(8);
     const byLabel = new Map(a.sensitivity.map((s) => [s.label, s.successPoints]));
+    expect(byLabel.has("Living 5 years longer")).toBe(true);
     expect(byLabel.get("Retire 2 years later")!).toBeGreaterThanOrEqual(0);
     expect(byLabel.get("Spend 10% more in retirement")!).toBeLessThanOrEqual(0);
     expect(byLabel.get("Returns 1 point a year lower")!).toBeLessThanOrEqual(0);
@@ -230,6 +231,55 @@ BND,VANGUARD TOTAL BOND MARKET ETF,800,$78.75,"$63,000.00","$60,000.00"
     expect(r.inputs!.spending.firstYear).toBe(1_200_000 + 960_000 + 600_000);
     expect(r.result!.successRate).toBeGreaterThanOrEqual(base.result!.successRate);
     expect(r.inputs!.spending.items).toHaveLength(1);
+  });
+
+  it("draws lifespans by default and can plan to a fixed age instead", async () => {
+    await household();
+    const modeled = await ok<RetirementResponse>("GET", "/api/retirement");
+    expect(modeled.settings.longevity).toBe("modeled");
+    expect(modeled.result!.medianLastDeathYear).toBeGreaterThan(2060);
+    expect(modeled.checks!.fixedHorizon!.age).toBe(95);
+    // The chart and the planning-age checks stay at the household planning age.
+    expect(modeled.inputs!.endYear).toBe(1988 + 95);
+    expect(modeled.checks!.fixedHorizon!.successRate).toBeLessThanOrEqual(modeled.result!.successRate + 0.03);
+
+    const fixed = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { longevity: "fixed" });
+    expect(fixed.result!.medianLastDeathYear).toBeNull();
+    expect(fixed.checks!.fixedHorizon).toBeNull();
+    // Living a shorter or longer time moves the answer the right way.
+    const long = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { longevity: "modeled", lifeMode: 96 });
+    const short = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { lifeMode: 80 });
+    expect(short.result!.successRate).toBeGreaterThanOrEqual(long.result!.successRate);
+  });
+
+  it("applies spending guardrails and reports how often they cut", async () => {
+    await household();
+    const base = await ok<RetirementResponse>("GET", "/api/retirement");
+    expect(base.result!.guardrails).toBeNull();
+    const r = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { guardrails: { enabled: true, upperPct: 20, lowerPct: 20, adjustPct: 10, floorPct: 75 } });
+    expect(r.result!.guardrails).not.toBeNull();
+    expect(r.checks!.withoutGuardrails!.successRate).toBeCloseTo(base.result!.successRate, 1);
+    expect(r.result!.successRate).toBeGreaterThanOrEqual(base.result!.successRate);
+    expect((await call("PUT", "/api/retirement/settings", { guardrails: { enabled: true, upperPct: 20, lowerPct: 20, adjustPct: 10, floorPct: 10 } })).status).toBe(400);
+  });
+
+  it("compares Roth conversion levels with the same futures", async () => {
+    expect((await ok<ConversionsResponse>("GET", "/api/retirement/conversions")).ready).toBe(false);
+    await household();
+    const c = await ok<ConversionsResponse>("GET", "/api/retirement/conversions");
+    expect(c.ready).toBe(true);
+    expect(c.window).toEqual({ from: 2051, to: 2060 });
+    expect(c.options!.map((o) => o.ratePct)).toEqual([0, 12, 22, 24]);
+    expect(c.options![0]!.medianConverted).toBe(0);
+    expect(c.options![2]!.medianConverted!).toBeGreaterThanOrEqual(c.options![1]!.medianConverted!);
+    // Choosing one puts it in the plan and shows up in the headline's conversion total.
+    const r = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { rothConversionRatePct: 22 });
+    expect(r.result!.medianConverted).toBeGreaterThan(0);
+    expect((await ok<ConversionsResponse>("GET", "/api/retirement/conversions")).chosen).toBe(22);
+    expect((await call("PUT", "/api/retirement/settings", { rothConversionRatePct: 15 })).status).toBe(400);
+    // Flat tax mode cannot model them.
+    await ok("PUT", "/api/retirement/settings", { taxMode: "flat" });
+    expect((await ok<ConversionsResponse>("GET", "/api/retirement/conversions")).ready).toBe(false);
   });
 
   it("validates settings", async () => {

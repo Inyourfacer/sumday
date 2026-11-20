@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ClaimingResponse, ExploreResponse, RetirementResponse } from "../../shared/api.ts";
+import type { ClaimingResponse, ConversionsResponse, ExploreResponse, RetirementResponse } from "../../shared/api.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { compactMoney, pct } from "../chartMath.ts";
 import { FanChart } from "../components/charts.tsx";
@@ -181,6 +181,10 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
   const [hair, setHair] = useState<number | null>(s.returnHaircutPct);
   const [cg, setCg] = useState<number | null>(s.capitalGainsPct);
   const [state, setState] = useState<number | null>(s.stateTaxPct);
+  const [mode, setMode] = useState<number | null>(s.lifeMode);
+  const [spread, setSpread] = useState<number | null>(s.lifeSpread);
+  const [survivor, setSurvivor] = useState<number | null>(s.survivorSpendingPct);
+  const [rails, setRails] = useState(s.guardrails);
   const [error, setError] = useState<string>();
   const save = async (patch: Record<string, unknown>) => {
     try {
@@ -238,6 +242,61 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             <NumberInput value={hair} min={0} max={5} step={0.5} suffix="points" ariaLabel="Returns stress" onChange={setHair} />
           </span>
         </Field>
+        <Field label="How long you live" hint="Random: each future draws its own lifespans, so money has to last only as long as you do. Fixed: plan to the household planning age in every future.">
+          <select value={s.longevity} onChange={(e) => void save({ longevity: e.target.value })} aria-label="How long you live">
+            <option value="modeled">Drawn at random (recommended)</option>
+            <option value="fixed">Fixed planning age</option>
+          </select>
+        </Field>
+        {s.longevity === "modeled" && (
+          <>
+            <Field label="Most common age at death" hint="The peak of the curve. Lower it for poor health, raise it for long-lived family.">
+              <span onBlur={() => mode !== null && mode !== s.lifeMode && void save({ lifeMode: mode })}>
+                <NumberInput value={mode} min={70} max={100} ariaLabel="Most common age at death" onChange={setMode} />
+              </span>
+            </Field>
+            <Field label="Spread of lifespans" hint="Years. Bigger means more very short and very long lives.">
+              <span onBlur={() => spread !== null && spread !== s.lifeSpread && void save({ lifeSpread: spread })}>
+                <NumberInput value={spread} min={5} max={15} suffix="years" ariaLabel="Spread of lifespans" onChange={setSpread} />
+              </span>
+            </Field>
+            {(data.inputs?.people.length ?? 0) > 1 && (
+              <Field label="Spending after one of you dies" hint="Percent of the plan. Housing and insurance don't halve, food and travel mostly do.">
+                <span onBlur={() => survivor !== null && survivor !== s.survivorSpendingPct && void save({ survivorSpendingPct: survivor })}>
+                  <NumberInput value={survivor} min={40} max={100} suffix="%" ariaLabel="Spending after one of you dies" onChange={setSurvivor} />
+                </span>
+              </Field>
+            )}
+          </>
+        )}
+        <label className="check wide">
+          <input type="checkbox" checked={rails.enabled} onChange={(e) => { const next = { ...rails, enabled: e.target.checked }; setRails(next); void save({ guardrails: next }); }} />
+          Cut spending after bad markets (guardrails) instead of spending the same every year
+        </label>
+        {rails.enabled && (
+          <>
+            <Field label="Cut when the withdrawal rate is this far above where it started" hint="Percent">
+              <span onBlur={() => rails !== s.guardrails && void save({ guardrails: rails })}>
+                <NumberInput value={rails.upperPct} min={5} max={50} suffix="%" ariaLabel="Guardrail cut trigger" onChange={(v) => setRails({ ...rails, upperPct: v ?? rails.upperPct })} />
+              </span>
+            </Field>
+            <Field label="Restore when it is this far below" hint="Percent">
+              <span onBlur={() => rails !== s.guardrails && void save({ guardrails: rails })}>
+                <NumberInput value={rails.lowerPct} min={5} max={50} suffix="%" ariaLabel="Guardrail restore trigger" onChange={(v) => setRails({ ...rails, lowerPct: v ?? rails.lowerPct })} />
+              </span>
+            </Field>
+            <Field label="Size of each cut or restore" hint="Percent of the plan">
+              <span onBlur={() => rails !== s.guardrails && void save({ guardrails: rails })}>
+                <NumberInput value={rails.adjustPct} min={1} max={25} suffix="%" ariaLabel="Guardrail step" onChange={(v) => setRails({ ...rails, adjustPct: v ?? rails.adjustPct })} />
+              </span>
+            </Field>
+            <Field label="Never spend less than" hint="Percent of the plan">
+              <span onBlur={() => rails !== s.guardrails && void save({ guardrails: rails })}>
+                <NumberInput value={rails.floorPct} min={40} max={100} suffix="%" ariaLabel="Guardrail floor" onChange={(v) => setRails({ ...rails, floorPct: v ?? rails.floorPct })} />
+              </span>
+            </Field>
+          </>
+        )}
         <label className="check wide">
           <input type="checkbox" checked={s.includePlanSavings} onChange={(e) => void save({ includePlanSavings: e.target.checked })} />
           Include the savings Next best moves recommends ({money((data.inputs?.extraSavings.total ?? 0) / 12)}/mo now)
@@ -267,7 +326,17 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             ? `Taxes follow the federal brackets, standard deduction, 0/15/20% gains rates and partial taxation of Social Security (${data.sources.tax}).`
             : "Taxes use the two flat rates above."}
         </li>
-        <li>Not included yet: Roth conversions, the extra deduction at 65+, Medicare surcharges, tax drag while saving, spousal Social Security benefits.</li>
+        <li>
+          {s.longevity === "modeled"
+            ? `Lifespans are drawn from a smooth curve peaking at ${s.lifeMode}, not a life table. After a first death the household spends ${s.survivorSpendingPct}% of the plan, the survivor keeps the larger Social Security benefit, pensions stop and taxes switch to single filing the next year.`
+            : "Every future plans to the same fixed age."}
+        </li>
+        <li>
+          {s.taxMode === "brackets"
+            ? `Medicare surcharges (IRMAA) are added from 65, set by income two years earlier. ${data.sources.medicare ?? ""}`
+            : "Medicare surcharges are only counted with the bracket tax model."}
+        </li>
+        <li>Not included yet: the extra deduction at 65+, tax drag while saving, spousal Social Security benefits before a death, long-term care costs.</li>
       </ul>
     </details>
   );
@@ -388,6 +457,86 @@ function ClaimingPanel() {
   );
 }
 
+/** Fill a tax bracket with Roth conversions before required minimums start. */
+function ConversionPanel({ onChanged }: { onChanged: () => void }) {
+  const conv = useApi<ConversionsResponse>("/api/retirement/conversions");
+  const [error, setError] = useState<string>();
+  const c = conv.data;
+  if (!c) return null;
+  if (!c.ready || !c.options || !c.window) {
+    return (
+      <section className="panel tight">
+        <h2>Roth conversions</h2>
+        <p className="muted small">{c.reason ?? "Not available yet."}</p>
+      </section>
+    );
+  }
+  const none = c.options[0]!;
+  const choose = async (ratePct: number) => {
+    try {
+      await api("PUT", "/api/retirement/settings", { rothConversionRatePct: ratePct });
+      setError(undefined);
+      notifyDataChanged();
+      onChanged();
+      conv.reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+  return (
+    <section className="panel tight">
+      <h2>Roth conversions</h2>
+      <p className="muted small">
+        Each year from {c.window.from} to {c.window.to}, before required minimums start, move pre-tax money to Roth until your taxable income reaches the top of the
+        bracket below. You pay the tax now, from taxable savings, to owe less later. The numbers use the same random futures for every row.
+      </p>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Fill this bracket</th>
+            <th className="num">Chance it lasts</th>
+            <th className="num">Converted</th>
+            <th className="num">Income tax over retirement</th>
+            <th className="num">Medicare surcharges</th>
+            <th className="num">End value after heirs' tax</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {c.options.map((o) => (
+            <tr key={o.ratePct} className={o.ratePct === c.chosen ? "current" : undefined}>
+              <td>{o.ratePct === 0 ? "No conversions" : `${o.ratePct}%`}</td>
+              <td className="num">{pct(o.successRate)}</td>
+              <td className="num">{o.medianConverted ? money(o.medianConverted) : "—"}</td>
+              <td className="num">
+                {o.medianLifetimeTax === null ? "—" : money(o.medianLifetimeTax)}
+                {o.ratePct !== 0 && none.medianLifetimeTax !== null && o.medianLifetimeTax !== null && (
+                  <span className="muted small"> ({o.medianLifetimeTax >= none.medianLifetimeTax ? "+" : "−"}{money(Math.abs(o.medianLifetimeTax - none.medianLifetimeTax))})</span>
+                )}
+              </td>
+              <td className="num">{o.medianMedicareSurcharge === null ? "—" : money(o.medianMedicareSurcharge)}</td>
+              <td className="num">{money(o.medianEndAfterTax)}</td>
+              <td>
+                {o.ratePct !== c.chosen && (
+                  <button type="button" className="btn small" onClick={() => void choose(o.ratePct)}>
+                    Use in plan
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <ErrorNote message={error} />
+      <p className="muted small">
+        Look for the row where the chance it lasts and the end value rise without a jump in Medicare surcharges. Conversions raise income now, which can
+        also cost health-insurance subsidies before 65 and state tax, neither of which is counted here. Every row replays the same 3,000 futures, so
+        gaps of a point or two are still within the simulation's own noise. This is a comparison to take to a tax professional, not a recommendation to convert.
+      </p>
+    </section>
+  );
+}
+
 export function RetirementPage() {
   const data = useApi<RetirementResponse>("/api/retirement");
   if (!data.data) return data.error ? <ErrorNote message={data.error} /> : <Loading />;
@@ -426,7 +575,7 @@ export function RetirementPage() {
     <>
       <PageHeader
         title="Retirement"
-        subtitle={`${i.people.map((p) => `${p.name} retires at ${p.retirementAge}`).join(", ")} · planning to age ${ageOf(i.endYear)} for ${primary.name}`}
+        subtitle={`${i.people.map((p) => `${p.name} retires at ${p.retirementAge}`).join(", ")} · ${d.settings.longevity === "modeled" ? "lifespans drawn at random" : `planning to age ${ageOf(i.endYear)} for ${primary.name}`}`}
       />
 
       <section className="panel retire-hero">
@@ -436,8 +585,8 @@ export function RetirementPage() {
           <p className="small">
             {onTrack ? <span className="status ok">On track</span> : <span className="status over">Below your {pct(target)} target</span>}{" "}
             <span className="muted">
-              {Math.round(r.successRate * r.runs).toLocaleString("en-US")} of {r.runs.toLocaleString("en-US")} simulated futures last to{" "}
-              {i.endYear}.
+              {Math.round(r.successRate * r.runs).toLocaleString("en-US")} of {r.runs.toLocaleString("en-US")} simulated futures last{" "}
+              {d.settings.longevity === "modeled" ? "as long as the people in them do" : `to ${i.endYear}`}.
             </span>
           </p>
           <p className="muted small">
@@ -469,6 +618,25 @@ export function RetirementPage() {
                 : `money runs out around age ${ageOf(r.medianDepletionYear)} (median)${r.earlyDepletionYear !== null ? `, as early as ${ageOf(r.earlyDepletionYear)} in the worst tenth` : ""}`}
             </dd>
           </div>
+          {r.guardrails && (
+            <div>
+              <dt>Spending cuts under your guardrails</dt>
+              <dd>
+                {r.guardrails.cutShare === 0
+                  ? "None needed in any future"
+                  : `${pct(r.guardrails.cutShare)} of futures cut spending at least once, to ${r.guardrails.medianLowestPct}% of plan at the lowest (typical)`}
+              </dd>
+            </div>
+          )}
+          {r.medianLifetimeTax !== null && (
+            <div>
+              <dt>Income tax over retirement</dt>
+              <dd>
+                {money(r.medianLifetimeTax)} median
+                {r.medianMedicareSurcharge !== null && r.medianMedicareSurcharge > 0 && <span className="muted small"> plus {money(r.medianMedicareSurcharge)} in Medicare surcharges</span>}
+              </dd>
+            </div>
+          )}
           {r.fragileRate >= 0.01 && (
             <div>
               <dt>Close calls</dt>
@@ -493,6 +661,20 @@ export function RetirementPage() {
               <dt>If returns are {d.checks.stress.haircutPct} point a year lower</dt>
               <dd>{pct(d.checks.stress.successRate)}</dd>
             </div>
+            {d.checks.fixedHorizon && (
+              <div>
+                <dt>If everyone lives to {d.checks.fixedHorizon.age}</dt>
+                <dd>
+                  {pct(d.checks.fixedHorizon.successRate)} <span className="muted small">no random lifespans</span>
+                </dd>
+              </div>
+            )}
+            {d.checks.withoutGuardrails && (
+              <div>
+                <dt>If spending never changed</dt>
+                <dd>{pct(d.checks.withoutGuardrails.successRate)}</dd>
+              </div>
+            )}
           </dl>
           <p className="muted small">
             Different methods answer slightly different questions. If they agree, trust the number more; if they split, the plan is more
@@ -505,6 +687,8 @@ export function RetirementPage() {
       <TryPanel endYear={i.endYear} birthYear={primary.birthYear} />
 
       <ClaimingPanel />
+
+      <ConversionPanel onChanged={reload} />
 
       {d.events.length > 0 && (
         <section className="panel">

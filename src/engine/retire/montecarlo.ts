@@ -16,7 +16,8 @@
  */
 import { matchValue } from "../plan/waterfall.ts";
 import { requiredMinimum, seededRandom, type RmdTable } from "./rules.ts";
-import { incomeTax, type TaxSetup } from "./tax.ts";
+import { deathAge, type Mortality } from "./longevity.ts";
+import { bracketTop, incomeTax, irmaaSurcharge, ordinaryTaxableIncome, type TaxSetup } from "./tax.ts";
 
 export interface HistoricalYear {
   year: number;
@@ -90,6 +91,29 @@ export interface SimInput {
   blockLength: number;
   /** Percentage points taken off every stock and bond return, to test a worse future than history (default 0). */
   returnHaircutPct?: number;
+  /**
+   * Draw when each person dies instead of planning to a fixed age. A run lasts until the last death;
+   * after the first, the household spends `survivorSpendingPct` of the plan, the survivor keeps the
+   * larger Social Security benefit, pensions stop, pre-tax money moves to the survivor and taxes
+   * switch to single filing the next year. `endYear` is then the furthest anyone could live.
+   */
+  mortality?: Mortality;
+  /**
+   * Spending guardrails: once retired, the share of the portfolio spent each year (net of guaranteed
+   * income) is compared with where it started. Above `upperPct` more than the start, spending is cut
+   * by `adjustPct` (never below `floorPct` of the plan); below `lowerPct` less, and spending has been
+   * cut, it is restored (never above the plan).
+   */
+  guardrails?: { upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
+  /**
+   * Convert pre-tax money to Roth each year in the window, as much as keeps taxable income inside the
+   * `targetRatePct` bracket, paying the tax from taxable savings. Needs bracket taxes.
+   */
+  conversion?: { targetRatePct: number; startYear: number; endYear: number };
+  /** Add Medicare income-related surcharges (IRMAA) from age 65, from the tax table's tiers. Bracket taxes only. */
+  medicare?: boolean;
+  /** Last year to show in `bands` and to measure `medianAtEnd` at (default `endYear`). */
+  displayEndYear?: number;
   seed: number;
 }
 
@@ -120,7 +144,22 @@ export interface SimResult {
   earlyDepletionYear: number | null;
   /** Share of runs that last to the end but finish with under three years of spending left. */
   fragileRate: number;
+  /** Income tax paid over the whole run (federal and state), median, today's dollars. Bracket taxes only. */
+  medianLifetimeTax: number | null;
+  /** Pre-tax money converted to Roth over the run, median. */
+  medianConverted: number | null;
+  /** Medicare surcharges paid over the run, median. */
+  medianMedicareSurcharge: number | null;
+  /** Median end value after tax a 22% heir would owe on pre-tax money. */
+  medianEndAfterTax: number;
+  /** With guardrails on: share of runs where spending was cut at least once, and the median lowest level in those runs (percent of plan). */
+  guardrails: { cutShare: number; medianLowestPct: number | null } | null;
+  /** With lifespans drawn: median year the last person dies. */
+  medianLastDeathYear: number | null;
 }
+
+/** What a heir is assumed to owe on inherited pre-tax money. */
+export const HEIR_TAX_RATE = 0.22;
 
 /** 95% Wilson interval for a share seen in `n` runs. */
 export function wilson(successes: number, n: number): [number, number] {
@@ -157,9 +196,16 @@ function sequence(n: number, length: number, block: number, rand: () => number):
 interface PathOutcome {
   totals: Float64Array;
   depletedAt: number | null;
+  taxPaid: number;
+  converted: number;
+  medicare: number;
+  /** Lowest spending level reached under guardrails, 1 = the plan. */
+  lowestSpending: number;
+  /** Pre-tax money left at the end. */
+  endTraditional: number;
 }
 
-function runPath(input: SimInput, years: number[], retireYear: number): PathOutcome {
+function runPath(input: SimInput, years: number[], retireYear: number, deaths: number[] | null = null): PathOutcome {
   const T = years.length;
   const totals = new Float64Array(T);
   const { allocation: a, taxes, people } = input;
@@ -183,6 +229,57 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
   const extra = input.extraSavings;
   let cumInfl = 1;
   let depletedAt: number | null = null;
+
+  // Lifespans: a year is lived by anyone whose death year is not yet past.
+  const deathYear = people.map((_, k) => (deaths ? deaths[k]! : Infinity));
+  const lastDeath = deaths ? Math.max(...deaths) : Infinity;
+  const moved = people.map(() => false);
+  const survivorPct = input.mortality?.survivorSpendingPct ?? 100;
+  const alive = (k: number, year: number) => year <= deathYear[k]!;
+  /** Household spending factor: lower once one of two has died. */
+  const survivorFactor = (year: number) => {
+    if (!deaths) return 1;
+    const living = people.filter((_, k) => alive(k, year)).length;
+    return living > 0 && living < n ? survivorPct / 100 : 1;
+  };
+  const guard = input.guardrails;
+  let mult = 1;
+  let lowest = 1;
+  let startRate: number | null = null;
+  const conv = input.conversion;
+  const irmaa = input.medicare ? input.taxes.brackets?.table.irmaa : undefined;
+  const magiHistory = new Float64Array(T).fill(Number.NaN);
+  const startingMagi = people.reduce((s, p) => s + p.income, 0);
+  let taxPaid = 0;
+  let converted = 0;
+  let medicare = 0;
+  let lastTrad = 0;
+  const totalNow = () => {
+    let total = taxable + roth + hsa;
+    for (let k = 0; k < n; k++) total += trad[k]!;
+    return total;
+  };
+  const spendAt = (t: number) => (input.spending[t] ?? 0) * survivorFactor(input.startYear + t) * mult;
+
+  /** Social Security and pension income this year, after the partial-year share `f`. */
+  const incomeFor = (year: number, f: number): { ss: number; pension: number } => {
+    let ss = 0;
+    let pension = 0;
+    const anyGone = deaths !== null && people.some((_, k) => !alive(k, year));
+    for (let k = 0; k < n; k++) {
+      if (!alive(k, year)) continue;
+      const p = people[k]!;
+      const age = year - p.birthYear;
+      let benefit = p.socialSecurity !== null && age >= p.claimAge ? p.socialSecurity * 12 : 0;
+      if (anyGone && age >= 60) {
+        // A survivor receives the larger of the two benefits.
+        for (let j = 0; j < n; j++) if (!alive(j, year) && people[j]!.socialSecurity !== null) benefit = Math.max(benefit, people[j]!.socialSecurity! * 12);
+      }
+      ss += f * benefit;
+      if (p.pension && age >= p.pension.startAge) pension += (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+    }
+    return { ss, pension };
+  };
 
   /** Pay `need` (after tax) from savings in order: taxable, pre-tax, Roth, HSA. Returns what couldn't be paid. */
   const withdraw = (need: number): number => {
@@ -218,13 +315,8 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
   /** Flat-rate retirement year: spending minus income, grossed up at a flat rate. */
   const retireFlat = (t: number, f: number): boolean => {
     const year = input.startYear + t;
-    let need = f * (input.spending[t] ?? 0);
-    for (let k = 0; k < n; k++) {
-      const p = people[k]!;
-      const age = year - p.birthYear;
-      if (p.socialSecurity !== null && age >= p.claimAge) need -= f * p.socialSecurity * 12;
-      if (p.pension && age >= p.pension.startAge) need -= (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
-    }
+    const income = incomeFor(year, f);
+    let need = f * spendAt(t) - income.ss - income.pension;
 
     // Required minimums come out whether needed or not; any extra is reinvested.
     for (let k = 0; k < n; k++) {
@@ -252,17 +344,21 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
    * from taxable, pre-tax, Roth and HSA in that order, with the amount found so
    * that spending is met after the tax that draw itself causes.
    */
-  const retireWithBrackets = (setup: TaxSetup, t: number, f: number): boolean => {
+  const retireWithBrackets = (setup0: TaxSetup, t: number, f: number): boolean => {
     const year = input.startYear + t;
-    const spend = f * (input.spending[t] ?? 0);
-    let ss = 0;
-    let pension = 0;
-    for (let k = 0; k < n; k++) {
-      const p = people[k]!;
-      const age = year - p.birthYear;
-      if (p.socialSecurity !== null && age >= p.claimAge) ss += f * p.socialSecurity * 12;
-      if (p.pension && age >= p.pension.startAge) pension += (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
+    // The year after the first death, the survivor files as a single person.
+    const widowed = deaths !== null && people.some((_, k) => !alive(k, year));
+    const setup: TaxSetup = widowed && setup0.filing === "married_joint" ? { ...setup0, filing: "single" } : setup0;
+    // Medicare surcharge: set by the income of two years back, per person on Medicare.
+    let medicareCost = 0;
+    if (irmaa) {
+      const back = magiHistory[Math.max(0, t - irmaa.lookbackYears)]!;
+      const monthly = irmaaSurcharge(Number.isFinite(back) ? back : startingMagi, setup.filing, irmaa);
+      const covered = people.filter((p, k) => alive(k, year) && year - p.birthYear >= 65).length;
+      medicareCost = f * monthly * 12 * covered;
     }
+    const spend = f * spendAt(t) + medicareCost;
+    const { ss, pension } = incomeFor(year, f);
     let rmdGross = 0;
     for (let k = 0; k < n; k++) {
       const p = people[k]!;
@@ -298,12 +394,61 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       return { fromTaxable, fromTrad, fromRoth, fromHsa, unmet: rest, net: cash + g - rest - tax };
     };
 
+    /** Roth conversion on top of this year's income: fill the chosen bracket, paying the tax from taxable savings. */
+    const convert = (ordinaryNow: number, gainsNow: number): number => {
+      if (!conv || year < conv.startYear || year > conv.endYear) return 0;
+      let tradLeft = 0;
+      for (let k = 0; k < n; k++) tradLeft += trad[k]!;
+      const edge = bracketTop(setup, conv.targetRatePct);
+      if (tradLeft <= 0 || edge === null) return 0;
+      const fits = (extra: number) =>
+        ordinaryTaxableIncome({ ordinary: (ordinaryNow + extra) / f, socialSecurity: ss / f, gains: gainsNow / f }, setup, cumInfl).taxableOrdinary <= edge;
+      let amount: number;
+      if (fits(tradLeft)) amount = tradLeft;
+      else if (!fits(0)) return 0;
+      else {
+        let lo = 0;
+        let hi = tradLeft;
+        for (let i = 0; i < 20; i++) {
+          const mid = (lo + hi) / 2;
+          if (fits(mid)) lo = mid;
+          else hi = mid;
+        }
+        amount = lo;
+      }
+      if (amount < 100) return 0;
+      let owe = taxOn(ordinaryNow + amount, gainsNow) - taxOn(ordinaryNow, gainsNow);
+      if (taxable > 0 && owe > 0) {
+        const basisReal = Math.min(taxable, basisNominal / cumInfl);
+        const share = Math.max(0, 1 - basisReal / taxable);
+        const gross = Math.min(taxable, owe / (1 - share * cg));
+        basisNominal *= 1 - gross / taxable;
+        taxable -= gross;
+        owe -= gross * (1 - share * cg);
+      }
+      const before = tradLeft;
+      for (let k = 0; k < n; k++) trad[k] = trad[k]! - amount * (trad[k]! / before);
+      roth += Math.max(0, amount - Math.max(0, owe));
+      converted += amount;
+      return amount;
+    };
+
+    /** Remember this year's income for the Medicare lookback, and the tax paid. */
+    const record = (ordinary: number, gains: number) => {
+      const r = incomeTax({ ordinary: ordinary / f, socialSecurity: ss / f, gains: gains / f }, setup, cumInfl);
+      taxPaid += r.total * f;
+      medicare += medicareCost;
+      magiHistory[t] = ordinary / f + gains / f + r.taxableSocialSecurity;
+    };
+
     const none = draw(0);
     if (none.net >= spend) {
       // Required minimums and income already cover spending: reinvest the surplus.
       const surplus = none.net - spend;
       taxable += surplus;
       basisNominal += surplus * cumInfl;
+      const c = convert(pension + rmdGross, 0);
+      record(pension + rmdGross + c, 0);
       return true;
     }
     const all = taxable + tradTotal + roth + hsa;
@@ -336,6 +481,10 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     if (d.fromTrad > 0) for (let k = 0; k < n; k++) trad[k] = trad[k]! - d.fromTrad * (trad[k]! / tradTotal);
     roth -= d.fromRoth;
     hsa -= d.fromHsa;
+    const ordinaryNow = pension + rmdGross + d.fromTrad;
+    const gainsNow = d.fromTaxable * gainShare;
+    const c = convert(ordinaryNow, gainsNow);
+    record(ordinaryNow + c, gainsNow);
     return true;
   };
 
@@ -353,6 +502,24 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       totals[t] = 0;
       continue;
     }
+    // Everyone has died: the plan is complete and what is left is what is left.
+    if (year > lastDeath) {
+      totals[t] = totals[t - 1] ?? 0;
+      continue;
+    }
+    if (deaths) {
+      for (let k = 0; k < n; k++) {
+        if (moved[k] || alive(k, year)) continue;
+        moved[k] = true;
+        pay[k] = 0;
+        // Pre-tax money moves to the surviving spouse.
+        const heir = people.findIndex((_, i) => alive(i, year));
+        if (heir >= 0) {
+          trad[heir] = trad[heir]! + trad[k]!;
+          trad[k] = 0;
+        }
+      }
+    }
     const growth =
       a.stocks * ((1 + h.stocks) / infl1 - 1) + a.bonds * ((1 + h.bonds) / infl1 - 1) + a.cash * ((1 + h.bills) / infl1 - 1) - input.feePct / 100 - ((a.stocks + a.bonds) * (input.returnHaircutPct ?? 0)) / 100;
 
@@ -361,7 +528,7 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
     for (let k = 0; k < n; k++) {
       const p = people[k]!;
       const income = pay[k]!;
-      if (income > 0 && year - p.birthYear < p.retirementAge) {
+      if (income > 0 && year - p.birthYear < p.retirementAge && alive(k, year)) {
         anyoneWorking = true;
         trad[k] = trad[k]! + f * (income * (p.pretaxPct / 100) + income * matchShare[k]!);
         roth += f * income * (p.rothPct / 100);
@@ -389,8 +556,23 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       continue;
     }
 
+    if (year < retireYear) magiHistory[t] = pay.reduce((s, v) => s + v, 0);
+
     // Retirement: withdraw what income doesn't cover.
     if (year >= retireYear) {
+      if (guard) {
+        const income = incomeFor(year, 1);
+        const base = (input.spending[t] ?? 0) * survivorFactor(year);
+        const port = totalNow();
+        const rate = port > 0 ? Math.max(0, base * mult - income.ss - income.pension) / port : Infinity;
+        if (startRate === null) {
+          if (rate >= 0.01 && Number.isFinite(rate)) startRate = rate;
+        } else {
+          if (rate > startRate * (1 + guard.upperPct / 100)) mult = Math.max(guard.floorPct / 100, mult * (1 - guard.adjustPct / 100));
+          else if (rate < startRate * (1 - guard.lowerPct / 100) && mult < 1) mult = Math.min(1, mult * (1 + guard.adjustPct / 100));
+          lowest = Math.min(lowest, mult);
+        }
+      }
       const funded = input.taxes.brackets ? retireWithBrackets(input.taxes.brackets, t, f) : retireFlat(t, f);
       if (!funded) {
         depletedAt = year;
@@ -410,8 +592,10 @@ function runPath(input: SimInput, years: number[], retireYear: number): PathOutc
       total += trad[k]!;
     }
     totals[t] = total;
+    lastTrad = 0;
+    for (let k = 0; k < n; k++) lastTrad += trad[k]!;
   }
-  return { totals, depletedAt };
+  return { totals, depletedAt, taxPaid, converted, medicare, lowestSpending: lowest, endTraditional: lastTrad };
 }
 
 function percentile(sorted: Float64Array, p: number): number {
@@ -419,6 +603,24 @@ function percentile(sorted: Float64Array, p: number): number {
   const i = Math.min(sorted.length - 1, Math.max(0, Math.round(p * (sorted.length - 1))));
   return sorted[i]!;
 }
+
+/** Each person's death year for run `run`: the same draws for the same people and seed, so paired comparisons stay paired. */
+function drawDeathYears(input: SimInput, run: number): number[] {
+  const m = input.mortality!;
+  return input.people.map((p, k) => {
+    const rand = seededRandom((input.seed ^ Math.imul(run + 1, 0x9e3779b1) ^ Math.imul(k + 1, 0x85ebca6b)) >>> 0);
+    rand();
+    rand();
+    const age = Math.max(0, input.startYear - p.birthYear);
+    return p.birthYear + Math.floor(deathAge(age, rand(), m));
+  });
+}
+
+const medianOf = (xs: number[]): number => {
+  if (xs.length === 0) return 0;
+  const sorted = Float64Array.from(xs).sort();
+  return sorted[Math.floor(sorted.length / 2)]!;
+};
 
 export function simulate(input: SimInput, options: { bands?: boolean } = {}): SimResult {
   const T = Math.max(1, input.endYear - input.startYear + 1);
@@ -430,10 +632,23 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
   let fragile = 0;
   const lastSpend = input.spending.at(-1) ?? 0;
   const depletion: number[] = [];
+  const taxes: number[] = [];
+  const conversions: number[] = [];
+  const surcharges: number[] = [];
+  const endsAfterTax: number[] = [];
+  const lowests: number[] = [];
+  const lastDeaths: number[] = [];
 
   for (let r = 0; r < input.runs; r++) {
     const years = sequence(input.history.length, T, Math.max(1, input.blockLength), rand);
-    const { totals, depletedAt } = runPath(input, years, retireYear);
+    const deaths = input.mortality ? drawDeathYears(input, r) : null;
+    if (deaths) lastDeaths.push(Math.max(...deaths));
+    const { totals, depletedAt, taxPaid, converted, medicare, lowestSpending, endTraditional } = runPath(input, years, retireYear, deaths);
+    taxes.push(taxPaid);
+    conversions.push(converted);
+    surcharges.push(medicare);
+    lowests.push(lowestSpending);
+    endsAfterTax.push(depletedAt === null ? Math.max(0, totals[T - 1]! - endTraditional * HEIR_TAX_RATE) : 0);
     if (depletedAt === null) {
       successes += 1;
       if (totals[T - 1]! < 3 * lastSpend) fragile += 1;
@@ -441,7 +656,8 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
     if (wantBands) for (let t = 0; t < T; t++) columns[t]![r] = totals[t]!;
   }
 
-  const bands: YearBand[] = columns.map((col, t) => {
+  const shown = input.displayEndYear ?? input.endYear;
+  const allBands: YearBand[] = columns.map((col, t) => {
     const sorted = col.slice().sort();
     return {
       year: input.startYear + t,
@@ -452,7 +668,9 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
       p90: Math.round(percentile(sorted, 0.9)),
     };
   });
+  const bands = allBands.filter((b) => b.year <= shown);
   depletion.sort((a, b) => a - b);
+  const cuts = lowests.filter((x) => x < 1);
   const atRetire = bands.find((b) => b.year === retireYear) ?? bands[0];
   return {
     runs: input.runs,
@@ -466,6 +684,12 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
     successInterval: wilson(successes, input.runs),
     earlyDepletionYear: depletion.length ? depletion[Math.floor(depletion.length / 10)]! : null,
     fragileRate: fragile / input.runs,
+    medianLifetimeTax: input.taxes.brackets ? Math.round(medianOf(taxes)) : null,
+    medianConverted: input.conversion && input.taxes.brackets ? Math.round(medianOf(conversions)) : null,
+    medianMedicareSurcharge: input.medicare && input.taxes.brackets?.table.irmaa ? Math.round(medianOf(surcharges)) : null,
+    medianEndAfterTax: Math.round(medianOf(endsAfterTax)),
+    guardrails: input.guardrails ? { cutShare: cuts.length / input.runs, medianLowestPct: cuts.length ? Math.round(medianOf(cuts) * 100) : null } : null,
+    medianLastDeathYear: lastDeaths.length ? medianOf(lastDeaths) : null,
   };
 }
 

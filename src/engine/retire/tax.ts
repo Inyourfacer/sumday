@@ -20,9 +20,19 @@ export interface FilingTable {
   ltcg: BracketRow[];
 }
 
+/** Medicare income-related premium surcharges (IRMAA): per filing status, rows of [upper income edge or null, extra monthly Part B cents per person]. */
+export interface IrmaaTable {
+  year: number;
+  source: string;
+  /** Years between the income that counts and the premium it sets (2). */
+  lookbackYears: number;
+  tiers: Partial<Record<FilingStatus, [number | null, number][]>>;
+}
+
 export interface TaxTable {
   year: number;
   source: string;
+  irmaa?: IrmaaTable;
   ssThresholds: Record<FilingStatus, [number, number]>;
   filing: Record<FilingStatus, FilingTable>;
 }
@@ -92,4 +102,31 @@ export function incomeTax(year: TaxableYear, setup: TaxSetup, ssErosion = 1): Ta
   const federal = layered(f.ordinary, 0, taxableOrdinary) + layered(f.ltcg, taxableOrdinary, taxableGains);
   const state = (setup.statePct / 100) * Math.max(0, year.ordinary + year.gains);
   return { federal, state, total: federal + state, taxableSocialSecurity: ssTaxable };
+}
+
+/**
+ * Ordinary income that is left to tax after the standard deduction, and the
+ * taxable part of Social Security. Used to see how much room is left in a bracket.
+ */
+export function ordinaryTaxableIncome(year: TaxableYear, setup: TaxSetup, ssErosion = 1): { taxableOrdinary: number; taxableSocialSecurity: number } {
+  const f = setup.table.filing[setup.filing];
+  const [t1, t2] = setup.table.ssThresholds[setup.filing];
+  const ssTaxable = taxableSocialSecurity(year.ordinary + year.gains, year.socialSecurity, [t1 / ssErosion, t2 / ssErosion]);
+  return { taxableOrdinary: Math.max(0, year.ordinary + ssTaxable - f.standardDeduction), taxableSocialSecurity: ssTaxable };
+}
+
+/**
+ * Top of the ordinary bracket taxed at `ratePct`, in taxable income. Infinity
+ * for the top bracket; null when the table has no such rate.
+ */
+export function bracketTop(setup: TaxSetup, ratePct: number): number | null {
+  const row = setup.table.filing[setup.filing].ordinary.find((r) => r[1] === ratePct);
+  return row ? (row[0] ?? Infinity) : null;
+}
+
+/** Extra Part B premium per person per month, in cents, for a given income (MAGI) two years back. */
+export function irmaaSurcharge(magi: number, filing: FilingStatus, table: IrmaaTable): number {
+  const rows = table.tiers[filing] ?? table.tiers.single ?? [];
+  for (const [edge, extra] of rows) if (edge === null || magi <= edge) return extra;
+  return 0;
 }

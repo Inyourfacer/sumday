@@ -3,11 +3,12 @@ import type { FastifyInstance } from "fastify";
 import { parseIsoDate } from "../engine/dates.ts";
 import { allocation as portfolioAllocation, fees } from "../engine/invest/portfolio.ts";
 import { historicalReplay, simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
+import { DEFAULT_MORTALITY } from "../engine/retire/longevity.ts";
 import type { TaxTable } from "../engine/retire/tax.ts";
 import { benefitAtClaim, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
 import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
-import type { ClaimingResponse, RetirementResponse } from "../shared/api.ts";
+import type { ClaimingResponse, ConversionsResponse, RetirementResponse } from "../shared/api.ts";
 import { retirementSettingsSchema } from "../shared/schemas.ts";
 import { listAccounts } from "./accounts.ts";
 import { today } from "./budget.ts";
@@ -40,6 +41,14 @@ interface StoredSettings {
   /** target = the mix you aim for, rebalanced yearly; actual = the mix of what you hold today, kept as is. */
   allocationSource: "target" | "actual";
   includePlanSavings: boolean;
+  /** modeled = each person's death is drawn at random (Gompertz); fixed = plan to the household planning age. */
+  longevity: "modeled" | "fixed";
+  lifeMode: number;
+  lifeSpread: number;
+  survivorSpendingPct: number;
+  guardrails: { enabled: boolean; upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
+  /** Fill this tax bracket with Roth conversions before required minimums begin; 0 = no conversions. */
+  rothConversionRatePct: number;
   spending: { categoryOverrides: Record<string, number | null>; items: SpendingPlan["items"]; oneOffs: SpendingPlan["oneOffs"] };
   /** Changes promoted from scenarios (extra savings, spending changes, one-time amounts, a home). */
   events: Override[];
@@ -56,13 +65,19 @@ const DEFAULTS: StoredSettings = {
   returnHaircutPct: 0,
   allocationSource: "target",
   includePlanSavings: true,
+  longevity: "modeled",
+  lifeMode: DEFAULT_MORTALITY.mode,
+  lifeSpread: DEFAULT_MORTALITY.dispersion,
+  survivorSpendingPct: DEFAULT_MORTALITY.survivorSpendingPct,
+  guardrails: { enabled: false, upperPct: 20, lowerPct: 20, adjustPct: 10, floorPct: 75 },
+  rothConversionRatePct: 0,
   spending: { categoryOverrides: {}, items: [], oneOffs: [] },
   events: [],
 };
 
 export function getSettings(db: Db): StoredSettings {
   const stored = getSetting<Partial<StoredSettings>>(db, "retirement") ?? {};
-  return { ...DEFAULTS, ...stored, spending: { ...DEFAULTS.spending, ...stored.spending } };
+  return { ...DEFAULTS, ...stored, guardrails: { ...DEFAULTS.guardrails, ...stored.guardrails }, spending: { ...DEFAULTS.spending, ...stored.spending } };
 }
 
 /** Share of the calendar year still to come, counting today (Jan 1 = 1, Dec 31 = 1/365). */
@@ -107,8 +122,20 @@ export function addSavings(into: ExtraSavings, add: ExtraSavings, sign = 1): voi
   for (const [id, v] of Object.entries(add.traditional)) into.traditional[Number(id)] = (into.traditional[Number(id)] ?? 0) + sign * v;
 }
 
+/** The plan to a fixed end year, with no lifespans drawn. */
+function withoutLifespans(input: SimInput, endYear: number): SimInput {
+  const copy: SimInput = { ...input, endYear };
+  delete copy.mortality;
+  delete copy.displayEndYear;
+  return copy;
+}
+
 export interface Built {
   input: SimInput;
+  /** The same plan to the fixed planning age, with no lifespans drawn: for the historical replay and a comparison. */
+  fixed: SimInput;
+  /** Years conversions are tried in, if any are chosen. */
+  conversionWindow: { from: number; to: number } | null;
   view: NonNullable<RetirementResponse["inputs"]>;
 }
 
@@ -202,7 +229,10 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     items: settings.spending.items,
     oneOffs: settings.spending.oneOffs,
   };
-  const endYear = Math.max(...simPeople.map((p) => p.birthYear + household.planningHorizonAge));
+  const horizonEnd = Math.max(...simPeople.map((p) => p.birthYear + household.planningHorizonAge));
+  const modeled = settings.longevity === "modeled";
+  // With lifespans drawn, the run goes as far as anyone could live; the chart and "at the end" stay at the planning age.
+  const endYear = modeled ? Math.max(horizonEnd, Math.max(...simPeople.map((p) => p.birthYear)) + DEFAULT_MORTALITY.maxAge) : horizonEnd;
   const spending = Array.from({ length: endYear - startYear + 1 }, (_, t) => spendingAtAge(plan, startYear + t - primary.birthYear));
   // Regular yearly spending when retirement starts, without one-off costs.
   const ongoingAtRetirement = (retireYear: number) => spendingAtAge({ ...plan, oneOffs: [] }, retireYear - primary.birthYear);
@@ -227,8 +257,25 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     runs: settings.runs,
     blockLength: settings.blockLength,
     returnHaircutPct: settings.returnHaircutPct,
+    displayEndYear: horizonEnd,
     seed: 20_260_101,
   };
+  const brackets = settings.taxMode === "brackets";
+  if (modeled) raw.mortality = { mode: settings.lifeMode, dispersion: settings.lifeSpread, maxAge: DEFAULT_MORTALITY.maxAge, survivorSpendingPct: settings.survivorSpendingPct };
+  if (settings.guardrails.enabled) {
+    const { upperPct, lowerPct, adjustPct, floorPct } = settings.guardrails;
+    raw.guardrails = { upperPct, lowerPct, adjustPct, floorPct };
+  }
+  if (brackets) raw.medicare = true;
+  const retireYearPlanned = (() => {
+    const w = simPeople.filter((p) => p.income > 0);
+    return w.length ? Math.max(startYear, ...w.map((p) => p.birthYear + p.retirementAge)) : startYear;
+  })();
+  // Conversions run from retirement until required minimums begin for the oldest person.
+  const oldest = simPeople.reduce((a, b) => (b.birthYear < a.birthYear ? b : a));
+  const window = { from: retireYearPlanned, to: oldest.birthYear + oldest.rmdStartAge - 1 };
+  const conversionWindow = brackets && settings.rothConversionRatePct > 0 && window.to >= window.from ? window : null;
+  if (conversionWindow) raw.conversion = { targetRatePct: settings.rothConversionRatePct, startYear: conversionWindow.from, endYear: conversionWindow.to };
   // Events promoted from scenarios apply on top of the plan.
   const input = applyOverrides(raw, settings.events);
   const ongoingInput = applyOverrides({ ...raw, spending: raw.spending.map((_, t) => ongoingAtRetirement(startYear + t)) }, settings.events);
@@ -239,9 +286,11 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     missing: [],
     built: {
       input,
+      fixed: withoutLifespans(input, horizonEnd),
+      conversionWindow,
       view: {
         startYear,
-        endYear,
+        endYear: horizonEnd,
         retireYear,
         people: simPeople.map((p) => ({
           id: p.id,
@@ -293,6 +342,7 @@ export function retirement(db: Db): RetirementResponse {
     returnsYears: `${RETURNS.years[0]!.year}–${RETURNS.years.at(-1)!.year}`,
     rmd: RMD.source,
     tax: TAX.source,
+    medicare: TAX.irmaa?.source ?? null,
   };
   const publicSettings = {
     successTarget: settings.successTarget,
@@ -305,6 +355,12 @@ export function retirement(db: Db): RetirementResponse {
     returnHaircutPct: settings.returnHaircutPct,
     allocationSource: settings.allocationSource,
     includePlanSavings: settings.includePlanSavings,
+    longevity: settings.longevity,
+    lifeMode: settings.lifeMode,
+    lifeSpread: settings.lifeSpread,
+    survivorSpendingPct: settings.survivorSpendingPct,
+    guardrails: settings.guardrails,
+    rothConversionRatePct: settings.rothConversionRatePct,
   };
   const who = new Map(getPeople(db).map((p) => [p.id, p.name]));
   const events = settings.events.map((o) => describeOverride(o, who));
@@ -315,7 +371,11 @@ export function retirement(db: Db): RetirementResponse {
     // Two other ways to look at the same plan, so one method's quirks don't decide the answer.
     const stressPoints = 1;
     const stress = simulate({ ...built.input, returnHaircutPct: (built.input.returnHaircutPct ?? 0) + stressPoints }, { bands: false });
-    const replay = historicalReplay(built.input);
+    // History replay and the "everyone lives to the planning age" check use the fixed horizon.
+    const replay = historicalReplay(built.fixed);
+    const fixedHorizon = built.input.mortality ? simulate({ ...built.fixed, runs: WHAT_IF_RUNS }, { bands: false }).successRate : null;
+    const { guardrails: _g, ...noRails } = built.input;
+    const withoutGuardrails = built.input.guardrails ? simulate({ ...noRails, runs: WHAT_IF_RUNS }, { bands: false }).successRate : null;
     return {
       result,
       whatIfs: whatIfs(built.input, settings.successTarget, result, WHAT_IF_RUNS, built.view.spending.firstYear),
@@ -323,6 +383,8 @@ export function retirement(db: Db): RetirementResponse {
         stress: { haircutPct: stressPoints, successRate: stress.successRate },
         replay: { successRate: replay.successRate, startYears: replay.cohorts.length },
         whatIfRuns: WHAT_IF_RUNS,
+        fixedHorizon: fixedHorizon === null ? null : { age: built.view.endYear - built.input.people.reduce((a, b) => (b.birthYear > a ? b.birthYear : a), 0), successRate: fixedHorizon },
+        withoutGuardrails: withoutGuardrails === null ? null : { successRate: withoutGuardrails },
       },
     };
   });
@@ -355,8 +417,36 @@ export function claiming(db: Db): ClaimingResponse {
   return { ready: true, people: out };
 }
 
+/**
+ * Roth conversions: the same plan with no conversions and with each tax bracket filled
+ * before required minimums begin. Same seed everywhere, so differences come from the choice.
+ */
+export function conversions(db: Db): ConversionsResponse {
+  const settings = getSettings(db);
+  if (settings.taxMode !== "brackets") return { ready: false, reason: "Conversions need the tax bracket model. Switch Taxes to brackets first." };
+  const base = buildInput(db, { ...settings, rothConversionRatePct: 12 });
+  if (!base.built) return { ready: false, reason: "Finish the household setup first." };
+  if (!base.built.conversionWindow) return { ready: false, reason: "There are no years between retiring and required minimums to convert in." };
+  const traditional = Object.values(base.built.input.balances.traditional).reduce((s, v) => s + v, 0);
+  if (traditional <= 0) return { ready: false, reason: "No pre-tax savings to convert." };
+  const options = [0, 12, 22, 24].map((ratePct) => {
+    const built = buildInput(db, { ...settings, rothConversionRatePct: ratePct }).built!;
+    const r = simulate({ ...built.input, runs: WHAT_IF_RUNS }, { bands: false });
+    return {
+      ratePct,
+      successRate: r.successRate,
+      medianConverted: ratePct === 0 ? 0 : r.medianConverted,
+      medianLifetimeTax: r.medianLifetimeTax,
+      medianMedicareSurcharge: r.medianMedicareSurcharge,
+      medianEndAfterTax: r.medianEndAfterTax,
+    };
+  });
+  return { ready: true, window: base.built.conversionWindow, chosen: settings.rothConversionRatePct, options };
+}
+
 export function registerRetirementRoutes(app: FastifyInstance, db: Db): void {
   app.get("/api/retirement", async () => retirement(db));
+  app.get("/api/retirement/conversions", async () => conversions(db));
   app.get("/api/retirement/claiming", async () => claiming(db));
 
   app.put("/api/retirement/settings", async (request) => {

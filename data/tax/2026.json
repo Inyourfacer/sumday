@@ -1,7 +1,7 @@
 {
   "year": 2026,
-  "source": "IRS Rev. Proc. 2025-32 (2026 inflation adjustments) as recalled when this file was written; standard deductions reflect the 2025 tax law changes. Amounts in cents. Verify against irs.gov before relying on it.",
-  "notes": "Brackets and the standard deduction are treated as indexed to inflation, so in the simulation's today's dollars they stay constant. The Social Security taxation thresholds are not indexed by law, so the simulation shrinks them with inflation. Not modeled: the extra deduction for age 65+, the net investment income tax, Medicare surcharges, state rules.",
+  "source": "IRS IR-2025-103 (Oct 9 2025) and Rev. Proc. 2025-32 (IRB 2025-45). Single and married-joint brackets, all four standard deductions read verbatim from the release; head-of-household and separate brackets and all capital-gains thresholds read from the bulletin summary. Amounts in cents. Checked Nov 2026.",
+  "notes": "Brackets and the standard deduction are treated as indexed to inflation, so in the simulation's today's dollars they stay constant. The Social Security taxation thresholds are not indexed by law. IRMAA tiers are indexed; each tier row is [upper MAGI edge, extra monthly Part B surcharge in cents]. Not modeled: the extra deduction for age 65+, the senior deduction, the net investment income tax, Part D surcharges, state rules.",
   "ssThresholds": {
     "single": [
       2500000,
@@ -186,7 +186,7 @@
           32
         ],
         [
-          64060000,
+          38435000,
           35
         ],
         [
@@ -200,12 +200,86 @@
           0
         ],
         [
-          54550000,
+          30685000,
           15
         ],
         [
           null,
           20
+        ]
+      ]
+    }
+  },
+  "irmaa": {
+    "year": 2026,
+    "source": "CMS 2026 Part B premium and IRMAA tiers as recalled; NOT verified against cms.gov or ssa.gov (both pages were unreachable). Check before relying on it.",
+    "lookbackYears": 2,
+    "partBBase": 20290,
+    "tiers": {
+      "single": [
+        [
+          10900000,
+          0
+        ],
+        [
+          13700000,
+          8120
+        ],
+        [
+          17100000,
+          20290
+        ],
+        [
+          20500000,
+          32460
+        ],
+        [
+          50000000,
+          44630
+        ],
+        [
+          null,
+          48700
+        ]
+      ],
+      "married_joint": [
+        [
+          21800000,
+          0
+        ],
+        [
+          27400000,
+          8120
+        ],
+        [
+          34200000,
+          20290
+        ],
+        [
+          41000000,
+          32460
+        ],
+        [
+          75000000,
+          44630
+        ],
+        [
+          null,
+          48700
+        ]
+      ],
+      "married_separate": [
+        [
+          10900000,
+          0
+        ],
+        [
+          39100000,
+          32460
+        ],
+        [
+          null,
+          48700
         ]
       ]
     }

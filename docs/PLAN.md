@@ -86,7 +86,7 @@ it was calculated.
 - Automated import pipeline (watched folder or email inbox → the same staging
   review).
 - Institution-specific adapters (paused).
-- Roth conversion planning and tax-optimized withdrawal order (the
+- Tax-optimized withdrawal order beyond the fixed one (Roth conversions are done: see DESIGN §11; the
   bracket-based tax model is done).
-- Mortality-aware planning horizon and survivor benefits.
+- Spousal Social Security benefits before a death (drawn lifespans and survivor spending are done).
 - Parametric returns as an alternative Monte Carlo mode.

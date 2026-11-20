@@ -22,6 +22,21 @@ describe("data file", () => {
   });
 });
 
+describe("data file details", () => {
+  it("keeps separate filers at half the joint top brackets and increasing Medicare tiers", () => {
+    expect(TABLE.filing.married_separate.ordinary[5]![0]).toBe(TABLE.filing.married_joint.ordinary[5]![0]! / 2);
+    expect(TABLE.filing.married_separate.ltcg[1]![0]).toBe(30_685_000);
+    for (const rows of Object.values(TABLE.irmaa!.tiers)) {
+      const edges = rows!.slice(0, -1).map((r) => r[0]!);
+      expect([...edges].sort((x, y) => x - y)).toEqual(edges);
+      const extras = rows!.map((r) => r[1]);
+      expect([...extras].sort((x, y) => x - y)).toEqual(extras);
+      expect(rows!.at(-1)![0]).toBeNull();
+    }
+    expect(TABLE.irmaa!.lookbackYears).toBe(2);
+  });
+});
+
 describe("federal income tax", () => {
   it("applies the standard deduction and the bands", () => {
     expect(incomeTax({ ordinary: 0, socialSecurity: 0, gains: 0 }, mfj).total).toBe(0);
