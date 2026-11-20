@@ -86,11 +86,14 @@ describe("plan", () => {
     expect(plan.limits).toMatchObject({ exact: true });
 
     expect(steps(plan, "starter_emergency")[0]!.status).toBe("done");
-    expect(steps(plan, "employer_match")[0]).toMatchObject({ status: "act", amount: 20_000 });
+    // $200 a month into a pre-tax plan costs $176 of take-home pay at the 12% bracket this income reaches.
+    expect(steps(plan, "employer_match")[0]).toMatchObject({ status: "act", amount: 17_600 });
+    expect(plan.taxView.nowBasis).toBe("income");
+    expect(plan.taxView.nowPct).toBe(12);
     // Store card: whole $1,500 balance. The Visa is paid in full, so it's not debt here.
     const debt = steps(plan, "high_interest_debt");
     expect(debt.map((d) => [d.subject?.name, d.amount])).toEqual([["Store card", 150_000]]);
-    expect(steps(plan, "full_emergency")[0]).toMatchObject({ status: "partial", amount: 250_000 });
+    expect(steps(plan, "full_emergency")[0]).toMatchObject({ status: "partial", amount: 252_400 });
     expect(plan.result).toMatchObject({ available: 420_000, allocated: 420_000, leftover: 0 });
     // Savings at 0.5% gets flagged.
     expect(plan.alerts.map((a) => a.kind)).toContain("cash_yield");
@@ -120,7 +123,7 @@ describe("goals", () => {
   it("creates goals, earmarks money and shows the planned amount", async () => {
     let goals = await ok<GoalView[]>("GET", "/api/goals");
     const emergency = goals.find((g) => g.kind === "emergency")!;
-    expect(emergency).toMatchObject({ targetIsAuto: true, targetAmount: 1_680_000, plannedMonthly: 250_000 });
+    expect(emergency).toMatchObject({ targetIsAuto: true, targetAmount: 1_680_000, plannedMonthly: 252_400 });
 
     const target = `${nextMonth(today.slice(0, 7), 24)}-01`;
     goals = await ok<GoalView[]>("POST", "/api/goals", { name: "House", targetAmount: 2_400_000, targetDate: target });

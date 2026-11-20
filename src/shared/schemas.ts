@@ -505,6 +505,8 @@ export const retirementSettingsSchema = z.object({
       floorPct: z.number().int().min(40).max(100),
     })
     .optional(),
+  /** Withdrawal order: draw pre-tax money first up to the top of this tax bracket; 0 = taxable savings first. */
+  withdrawalFillRatePct: z.union([z.literal(0), z.literal(12), z.literal(22), z.literal(24)]).optional(),
   /** Early-withdrawal rules: the 10% penalty before 60, the rule of 55, and how much of today's Roth balance is your own contributions. */
   earlyWithdrawalRules: z.boolean().optional(),
   ruleOf55: z.boolean().optional(),

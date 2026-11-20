@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { incomeTax, taxableSocialSecurity, type TaxSetup, type TaxTable } from "./tax.ts";
+import { incomeTax, ordinaryTaxableIncome, taxableSocialSecurity, totalDeduction, type TaxSetup, type TaxTable } from "./tax.ts";
 
 const TABLE = JSON.parse(readFileSync(new URL("../../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
 const mfj: TaxSetup = { table: TABLE, filing: "married_joint", statePct: 0 };
@@ -93,5 +93,59 @@ describe("Social Security taxation", () => {
     const base = incomeTax({ ordinary: dollars(20_000), socialSecurity: dollars(30_000), gains: 0 }, mfj, 1).taxableSocialSecurity;
     const later = incomeTax({ ordinary: dollars(20_000), socialSecurity: dollars(30_000), gains: 0 }, mfj, 2).taxableSocialSecurity;
     expect(later).toBeGreaterThan(base);
+  });
+});
+
+describe("deductions for people 65 and older", () => {
+  const single65: TaxSetup = { table: TABLE, filing: "single", statePct: 0, seniors: 1, year: 2026 };
+  const joint65: TaxSetup = { table: TABLE, filing: "married_joint", statePct: 0, seniors: 2, year: 2026 };
+
+  it("adds the extra standard deduction and the senior deduction", () => {
+    // Single: $16,100 + $2,050 (unmarried) + $6,000.
+    expect(totalDeduction(single65, dollars(50_000))).toBe(dollars(16_100 + 2_050 + 6_000));
+    // Joint, both 65: $32,200 + 2 × $1,650 + $12,000.
+    expect(totalDeduction(joint65, dollars(100_000))).toBe(dollars(32_200 + 3_300 + 12_000));
+    // Nobody 65: the standard deduction alone.
+    expect(totalDeduction({ ...single65, seniors: 0 }, dollars(50_000))).toBe(dollars(16_100));
+  });
+
+  it("phases the senior deduction out at 6% of income over $75,000 ($150,000 joint)", () => {
+    expect(totalDeduction(single65, dollars(100_000))).toBe(dollars(16_100 + 2_050 + 6_000 - 1_500));
+    expect(totalDeduction(single65, dollars(175_000))).toBe(dollars(16_100 + 2_050));
+    expect(totalDeduction(single65, dollars(400_000))).toBe(dollars(16_100 + 2_050));
+    expect(totalDeduction(joint65, dollars(200_000))).toBe(dollars(32_200 + 3_300 + 12_000 - 3_000));
+    // The extra standard deduction does not phase out.
+    expect(totalDeduction(joint65, dollars(900_000))).toBe(dollars(32_200 + 3_300));
+  });
+
+  it("applies the senior deduction only in 2025 through 2028, and never to separate filers", () => {
+    expect(totalDeduction({ ...single65, year: 2028 }, 0)).toBe(dollars(24_150));
+    expect(totalDeduction({ ...single65, year: 2029 }, 0)).toBe(dollars(16_100 + 2_050));
+    expect(totalDeduction({ ...single65, year: 2024 }, 0)).toBe(dollars(16_100 + 2_050));
+    expect(totalDeduction({ ...single65, year: undefined }, 0)).toBe(dollars(16_100 + 2_050));
+    expect(totalDeduction({ ...single65, filing: "married_separate" }, 0)).toBe(dollars(16_100 + 1_650));
+  });
+
+  it("holds the senior deduction fixed in nominal dollars, so it shrinks in today's dollars", () => {
+    // After prices double: $3,000 in today's dollars, and the phase-out starts at $37,500 of today's dollars.
+    expect(totalDeduction(single65, dollars(30_000), 2)).toBe(dollars(16_100 + 2_050 + 3_000));
+    expect(totalDeduction(single65, dollars(50_000), 2)).toBe(dollars(16_100 + 2_050 + 3_000 - 750));
+  });
+
+  it("lowers the tax", () => {
+    const young = incomeTax({ ordinary: dollars(60_000), socialSecurity: 0, gains: 0 }, { ...single65, seniors: 0 }).federal;
+    const old = incomeTax({ ordinary: dollars(60_000), socialSecurity: 0, gains: 0 }, single65).federal;
+    // Taxable $35,850 against $43,900: 10% of $12,400 plus 12% of the rest.
+    expect(old).toBeCloseTo(dollars(1_240 + 0.12 * (35_850 - 12_400)), 0);
+    expect(young).toBeGreaterThan(old);
+    expect(ordinaryTaxableIncome({ ordinary: dollars(60_000), socialSecurity: 0, gains: 0 }, single65).taxableOrdinary).toBe(dollars(35_850));
+  });
+
+  it("adds an extra 6% to the rate on income inside the phase-out", () => {
+    const tax = (income: number) => incomeTax({ ordinary: dollars(income), socialSecurity: 0, gains: 0 }, single65).federal;
+    // Single, $100,000 to $101,000: the 22% bracket, plus 6% × 22% from the shrinking deduction.
+    expect((tax(101_000) - tax(100_000)) / dollars(1_000)).toBeCloseTo(0.22 * 1.06, 3);
+    // Beyond the phase-out it is just the bracket.
+    expect((tax(201_000) - tax(200_000)) / dollars(1_000)).toBeCloseTo(0.24, 3);
   });
 });

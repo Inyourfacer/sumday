@@ -315,6 +315,33 @@ export function PlanPage() {
   );
 }
 
+/** The two tax rates behind the Roth-or-pre-tax advice, and which way they point. */
+function TaxViewNote({ view }: { view: PlanResponse["taxView"] }) {
+  if (view.nowPct === null) return null;
+  const verdict =
+    view.lean === "traditional"
+      ? "Pre-tax (traditional) money is favored: the deduction is worth more now than later."
+      : view.lean === "roth"
+        ? "Roth money is favored: tax now is cheaper than tax later."
+        : view.lean === "either"
+          ? "The two rates are close, so either works; a mix gives you more control later."
+          : null;
+  return (
+    <div className="note">
+      <strong>Roth or pre-tax?</strong> Your next dollar is taxed at about {view.nowPct}% now ({view.nowBasis === "you" ? "the rate you entered" : "estimated from your income"}).
+      {view.retirementPct !== null && view.retirementRange ? (
+        <>
+          {" "}
+          In retirement an extra pre-tax dollar is expected to be taxed at about {view.retirementPct}% (middle half of simulated futures: {view.retirementRange[0]}% to {view.retirementRange[1]}%).{" "}
+          {verdict}
+        </>
+      ) : (
+        <> The retirement side needs your household setup and a bracket tax model on the Retirement page.</>
+      )}
+    </div>
+  );
+}
+
 function PlanSettingsPanel({
   plan,
   onSave,
@@ -533,12 +560,20 @@ function PlanSettingsPanel({
             <MoneyInput value={override} onChange={setOverride} placeholder="Automatic" ariaLabel="Amount to allocate each month" />
           </span>
         </Field>
-        <Field label="Your marginal tax rate" hint="Optional. Lets pre-tax 401(k) steps show their smaller take-home cost. Blank = treat them as take-home dollars.">
+        <Field
+          label="Your marginal tax rate"
+          hint={
+            plan.taxView.nowBasis === "income" && plan.taxView.nowPct !== null
+              ? `Optional. Blank = estimated from your income (${plan.taxView.nowPct}% now). Used for pre-tax take-home cost and the Roth or pre-tax advice.`
+              : "Optional. Used for pre-tax take-home cost and the Roth or pre-tax advice. Blank = estimated from your income once it is entered."
+          }
+        >
           <span onBlur={() => taxPct !== s.marginalTaxPct && void onSave({ marginalTaxPct: taxPct })}>
             <NumberInput value={taxPct} onChange={setTaxPct} min={0} max={60} step={1} suffix="%" ariaLabel="Marginal tax rate" />
           </span>
         </Field>
       </div>
+      <TaxViewNote view={plan.taxView} />
       <p className="muted small">
         Contribution limits: {plan.limits.year}
         {!plan.limits.exact && ` (${plan.limits.requestedYear} not published yet)`}. Source: {plan.limits.source}

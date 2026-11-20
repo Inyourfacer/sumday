@@ -383,8 +383,10 @@ describe("bracket taxes in retirement", () => {
   const cents = (d: number) => d * 100;
 
   it("draws enough from pre-tax money to cover spending after the tax the draw causes", () => {
+    // Under 65, so only the standard deduction applies.
     const r = simulate(
       input({
+        people: [retiree({ birthYear: 1976 })],
         balances: { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: { 1: cents(1_000_000) } },
         spending: Array(30).fill(cents(40_000)),
         taxes: brackets(),

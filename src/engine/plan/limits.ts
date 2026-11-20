@@ -14,6 +14,11 @@ export interface ContributionLimits {
   hsa: { self: Cents; family: Cents; catchUp55: Cents };
   /** Modified AGI range over which Roth IRA contributions phase out, by filing status. */
   rothIraPhaseOut: Record<FilingStatus, [Cents, Cents]>;
+  /**
+   * Modified AGI range over which a traditional IRA deduction phases out: for someone covered by a workplace plan (by filing
+   * status), and for married-joint filers who are not covered but whose spouse is.
+   */
+  traditionalIraDeduction?: { coveredByWorkplacePlan: Record<FilingStatus, [Cents, Cents]>; spouseCoveredOnly: [Cents, Cents] };
 }
 
 export interface LimitsChoice {

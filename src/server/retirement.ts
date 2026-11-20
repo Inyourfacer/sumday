@@ -8,7 +8,7 @@ import type { TaxTable } from "../engine/retire/tax.ts";
 import { benefitAtClaim, fullRetirementAge, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
 import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
-import type { ClaimingResponse, ConversionsResponse, RetirementResponse } from "../shared/api.ts";
+import type { ClaimingResponse, ConversionsResponse, RetirementResponse, WithdrawalOrderResponse } from "../shared/api.ts";
 import { retirementSettingsSchema } from "../shared/schemas.ts";
 import { listAccounts } from "./accounts.ts";
 import { today } from "./budget.ts";
@@ -23,7 +23,7 @@ const RETURNS = JSON.parse(readFileSync(new URL("../../data/returns/us-annual.js
   source: string;
   years: HistoricalYear[];
 };
-const TAX = JSON.parse(readFileSync(new URL("../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
+export const TAX = JSON.parse(readFileSync(new URL("../../data/tax/2026.json", import.meta.url), "utf8")) as TaxTable;
 const RMD = JSON.parse(readFileSync(new URL("../../data/rmd/uniform-lifetime.json", import.meta.url), "utf8")) as RmdTable & { source: string };
 
 interface StoredSettings {
@@ -49,6 +49,8 @@ interface StoredSettings {
   guardrails: { enabled: boolean; upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
   /** Fill this tax bracket with Roth conversions before required minimums begin; 0 = no conversions. */
   rothConversionRatePct: number;
+  /** Draw pre-tax money first, up to the top of this bracket, before taxable savings; 0 = taxable savings first. */
+  withdrawalFillRatePct: number;
   /** The 10% penalty on early withdrawals before 60, whether the rule of 55 exempts workplace plans, and the share of today's Roth balance that is contributions. */
   earlyWithdrawalRules: boolean;
   ruleOf55: boolean;
@@ -82,6 +84,7 @@ const DEFAULTS: StoredSettings = {
   survivorSpendingPct: DEFAULT_MORTALITY.survivorSpendingPct,
   guardrails: { enabled: false, upperPct: 20, lowerPct: 20, adjustPct: 10, floorPct: 75 },
   rothConversionRatePct: 0,
+  withdrawalFillRatePct: 0,
   earlyWithdrawalRules: true,
   ruleOf55: true,
   rothBasisPct: 100,
@@ -311,6 +314,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     raw.guardrails = { upperPct, lowerPct, adjustPct, floorPct };
   }
   if (brackets) raw.medicare = true;
+  if (brackets && settings.withdrawalFillRatePct > 0) raw.withdrawalFill = { ratePct: settings.withdrawalFillRatePct };
   if (settings.earlyWithdrawalRules && brackets) {
     raw.penalties = { rothBasisShare: settings.rothBasisPct / 100, ruleOf55: settings.ruleOf55, freeTraditional: workplace };
   }
@@ -411,6 +415,7 @@ export function retirement(db: Db): RetirementResponse {
     survivorSpendingPct: settings.survivorSpendingPct,
     guardrails: settings.guardrails,
     rothConversionRatePct: settings.rothConversionRatePct,
+    withdrawalFillRatePct: settings.withdrawalFillRatePct,
     earlyWithdrawalRules: settings.earlyWithdrawalRules,
     ruleOf55: settings.ruleOf55,
     rothBasisPct: settings.rothBasisPct,
@@ -525,8 +530,36 @@ export function conversions(db: Db): ConversionsResponse {
   return { ready: true, window: base.built.conversionWindow, chosen: settings.rothConversionRatePct, options };
 }
 
+/**
+ * Withdrawal order: the plan with taxable savings drawn first, and with pre-tax money drawn first up to the top
+ * of each bracket. The same futures for every row, so each is compared with the first future by future.
+ */
+export function withdrawalOrder(db: Db): WithdrawalOrderResponse {
+  const settings = getSettings(db);
+  if (settings.taxMode !== "brackets") return { ready: false, reason: "The withdrawal order needs the tax bracket model. Switch Taxes to brackets first." };
+  const first = buildInput(db, settings);
+  if (!first.built) return { ready: false, reason: "Finish the household setup first." };
+  const traditional = Object.values(first.built.input.balances.traditional).reduce((s, v) => s + v, 0);
+  if (traditional <= 0) return { ready: false, reason: "No pre-tax savings, so the order does not change anything." };
+  const runs = [0, 12, 22, 24].map((ratePct) => {
+    const built = buildInput(db, { ...settings, withdrawalFillRatePct: ratePct }).built!;
+    return { ratePct, r: simulate({ ...built.input, runs: WHAT_IF_RUNS }, { bands: false, perRun: true }) };
+  });
+  const baseRun = runs[0]!.r.perRun!;
+  const options = runs.map(({ ratePct, r }) => ({
+    ratePct,
+    successRate: r.successRate,
+    medianLifetimeTax: r.medianLifetimeTax,
+    medianMedicareSurcharge: r.medianMedicareSurcharge,
+    medianEndAfterTax: r.medianEndAfterTax,
+    paired: ratePct === 0 ? null : compareRuns(baseRun, r.perRun!),
+  }));
+  return { ready: true, chosen: settings.withdrawalFillRatePct, options };
+}
+
 export function registerRetirementRoutes(app: FastifyInstance, db: Db): void {
   app.get("/api/retirement", async () => retirement(db));
+  app.get("/api/retirement/withdrawal-order", async () => withdrawalOrder(db));
   app.get("/api/retirement/conversions", async () => conversions(db));
   app.get("/api/retirement/claiming", async () => claiming(db));
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ClaimingResponse, ConversionsResponse, ExploreResponse, RetirementResponse } from "../../shared/api.ts";
+import type { ClaimingResponse, ConversionsResponse, ExploreResponse, RetirementResponse, WithdrawalOrderResponse } from "../../shared/api.ts";
 import { api, errorMessage, notifyDataChanged, useApi } from "../api.ts";
 import { compactMoney, pct } from "../chartMath.ts";
 import { FanChart } from "../components/charts.tsx";
@@ -432,7 +432,10 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
           While one of two earners has stopped working, the other's pay (less payroll tax, contributions and income tax) goes toward spending and the rest comes from savings; the
           spare-money savings from Next best moves stop then. Healthcare spending grows {s.healthcareGrowthPct}% a year above inflation from today.
         </li>
-        <li>Not included yet: the extra deduction at 65+, tax drag while saving, penalty exceptions such as 72(t) payments, Part D surcharges, and the cost of losing health-insurance subsidies.</li>
+        <li>
+          People 65 and over get the extra standard deduction and, through 2028, the $6,000 senior deduction. Not included yet: tax drag while saving, penalty exceptions such as
+          72(t) payments, Part D surcharges, and the cost of losing health-insurance subsidies.
+        </li>
       </ul>
     </details>
   );
@@ -549,6 +552,99 @@ function ClaimingPanel() {
           </div>
         );
       })}
+    </section>
+  );
+}
+
+/** Which money is spent first: taxable savings, or pre-tax money up to the top of a bracket. */
+function WithdrawalOrderPanel({ onChanged }: { onChanged: () => void }) {
+  const order = useApi<WithdrawalOrderResponse>("/api/retirement/withdrawal-order");
+  const [error, setError] = useState<string>();
+  const o = order.data;
+  if (!o) return null;
+  if (!o.ready || !o.options) {
+    return (
+      <section className="panel tight">
+        <h2>Which money to spend first</h2>
+        <p className="muted small">{o.reason ?? "Not available yet."}</p>
+      </section>
+    );
+  }
+  const none = o.options[0]!;
+  const choose = async (ratePct: number) => {
+    try {
+      await api("PUT", "/api/retirement/settings", { withdrawalFillRatePct: ratePct });
+      setError(undefined);
+      notifyDataChanged();
+      onChanged();
+      order.reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+  return (
+    <section className="panel tight">
+      <h2>Which money to spend first</h2>
+      <p className="muted small">
+        The usual order spends taxable savings first and leaves pre-tax money to grow, which can push required minimums into a high bracket later. The other rows spend
+        pre-tax money first, only as far as the top of the bracket shown, then taxable savings. Every row replays the same random futures, so the last column compares each
+        row with "Taxable first" one future at a time.
+      </p>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Spend first</th>
+            <th className="num">Chance it lasts</th>
+            <th className="num">Income tax over retirement</th>
+            <th className="num">Medicare surcharges</th>
+            <th className="num">End value after heirs' tax</th>
+            <th className="num">Better off than taxable first</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {o.options.map((opt) => (
+            <tr key={opt.ratePct} className={opt.ratePct === o.chosen ? "current" : undefined}>
+              <td>{opt.ratePct === 0 ? "Taxable savings first" : `Pre-tax up to the ${opt.ratePct}% bracket`}</td>
+              <td className="num">{pct(opt.successRate)}</td>
+              <td className="num">
+                {opt.medianLifetimeTax === null ? "—" : money(opt.medianLifetimeTax)}
+                {opt.ratePct !== 0 && none.medianLifetimeTax !== null && opt.medianLifetimeTax !== null && (
+                  <span className="muted small"> ({opt.medianLifetimeTax >= none.medianLifetimeTax ? "+" : "−"}{money(Math.abs(opt.medianLifetimeTax - none.medianLifetimeTax))})</span>
+                )}
+              </td>
+              <td className="num">{opt.medianMedicareSurcharge === null ? "—" : money(opt.medianMedicareSurcharge)}</td>
+              <td className="num">{money(opt.medianEndAfterTax)}</td>
+              <td className="num">
+                {opt.paired === null ? (
+                  "—"
+                ) : (
+                  <>
+                    {pct(opt.paired.better)} of futures{" "}
+                    <span className="muted small">
+                      (worse in {pct(opt.paired.worse)}; typical {opt.paired.medianEndDifference >= 0 ? "+" : "−"}
+                      {money(Math.abs(opt.paired.medianEndDifference))})
+                    </span>
+                  </>
+                )}
+              </td>
+              <td>
+                {opt.ratePct !== o.chosen && (
+                  <button type="button" className="btn small" onClick={() => void choose(opt.ratePct)}>
+                    Use in plan
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <ErrorNote message={error} />
+      <p className="muted small">
+        Filling a low bracket early usually cuts lifetime tax, but it also uses up room that Roth conversions would use, so check the two panels together. If the rows
+        look alike, there is little pre-tax money to draw or little taxable money to hold back. Only pre-tax money that can come out without penalty is used, and the
+        brackets are today's, assumed to hold in real terms.
+      </p>
     </section>
   );
 }
@@ -844,6 +940,8 @@ export function RetirementPage() {
       <TryPanel endYear={i.endYear} birthYear={primary.birthYear} />
 
       <ClaimingPanel />
+
+      <WithdrawalOrderPanel onChanged={reload} />
 
       <ConversionPanel onChanged={reload} />
 

@@ -143,6 +143,7 @@ describe("Roth conversions", () => {
     // One year, nothing else: income that fills the 12% bracket is the top edge plus the standard deduction.
     const input = plan({
       endYear: 2026,
+      people: [person({ birthYear: 1976 })], // under 65, so only the standard deduction applies
       spending: [0],
       taxes,
       balances: { taxable: cents(500_000), taxableBasis: cents(500_000), roth: 0, hsa: 0, traditional: { 1: cents(900_000) } },
