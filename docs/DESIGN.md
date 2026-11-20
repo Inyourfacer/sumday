@@ -411,16 +411,66 @@ while Sumday is open; each alert notifies once.
 
 ### 11.3 What it does *not* do (yet)
 
-Spousal Social Security benefits before a death, tax-optimized withdrawal
-order beyond the fixed one, tax drag on dividends while saving, the extra
-deduction at 65+, health-insurance subsidy cliffs, long-term care costs, or
-state rules beyond one flat rate.
+Tax-optimized withdrawal order beyond the fixed one, tax drag on dividends
+while saving, the extra deduction at 65+, health-insurance subsidy cliffs,
+Part D surcharges, penalty exceptions such as 72(t) payments, or state rules
+beyond one flat rate.
+
+**Early withdrawals** (bracket tax mode). Before 60 (used for 59½, so the
+penalty can run up to a year long), pre-tax money drawn costs 10% on top of
+tax. Workplace plans are open without penalty if the person stops working in or
+after the year they turn 55 (the rule of 55), including later contributions to
+them. Roth money is tracked in layers: contributions come out free, conversions
+after five calendar years are free and sooner cost 10% (but no tax), and growth
+costs tax and 10%. Today's Roth balance is assumed to be a set share
+contributions (default 100%, adjustable). The draw order before 60 is taxable
+money, penalty-free pre-tax, penalty-free Roth, conversions inside five years,
+pre-tax with penalty, Roth growth, then the HSA. Roth rules apply while everyone
+alive is under 60 because accounts are not tracked per owner.
+
+**Social Security for couples.** A spouse with a smaller full-retirement-age
+benefit (or none entered) receives up to half of the other's, minus their own,
+once both have claimed; taken before their own full retirement age it is cut by
+25/36% a month for 36 months and 5/12% after. A survivor receives the larger of
+the two benefits. Optionally, benefits are cut to a share of scheduled from a
+year on to represent the trust-fund shortfall (2026 Trustees Report: retirement
+fund short in late 2032, about 78% payable, lower later; the model holds the
+share constant). Retirement shows the chance both with and without the cut.
+
+**Pay while one of two has retired.** Once one earner has stopped and another
+still works, the remaining pay (less pre-tax and Roth contributions, payroll tax
+with the Social Security wage base, and income tax) counts toward spending and
+the rest is drawn from savings; extra pay is saved. The spare-money savings
+suggested by Next best moves stop then, because they came from the full income.
+
+**Spending paths.** Healthcare (default 15% of retirement spending) grows a
+set amount above inflation (default 1% a year) from today; the rest can drift up
+or down a set real percent a year after retiring (default 0; retiree spending
+often drifts down). **Long-term care** (optional) gives each person a chance of
+a spell of paid care in the last years of life, with a length averaging a few
+years and a yearly cost that grows faster than inflation, paid on top of
+spending. The probability, length and cost are rough defaults, not checked
+against current price surveys. Retirement shows the chance with and without it.
+
+**How big a shortfall is.** In futures where the money runs out, the unfunded
+spending from that year to the end of the plan (after Social Security and
+pensions) is added up: the median and worst tenth of failing futures, in dollars
+and years of spending, and the average across all futures. After the money runs
+out, pay from a still-working spouse is not counted, which slightly overstates
+the shortfall in those rare cases. **Paired comparisons** (used for Roth
+conversions) replay the same futures for each option and report the share
+where one ends better, the typical difference, and futures saved or lost,
+which is much tighter than comparing medians from separate runs.
 
 **Lifespans.** By default each simulated future draws when each person dies
 from a Gompertz curve (`src/engine/retire/longevity.ts`): the most common age
-at death (default 88) and a spread (default 10 years) set the curve; it is a
-smooth approximation, not a life table, and does not know sex, health or
-family history. A future lasts until the last death, so the answer is the
+at death (default 87) and a spread (default 10 years) set the curve. The
+defaults were fitted to the SSA 2023 period life table, averaging men and
+women at 65 (`data/mortality/ssa-period-2023.json`): within a point and a half
+of the table from 70 to 105, with a test that holds it there. A single curve
+fits one sex worse (men peak near 85, women near 89), does not know health or
+family history, and leaves out future gains in life expectancy, so move the
+mode for any of those. A future lasts until the last death, so the answer is the
 chance the money outlives *the people*, not the chance it reaches a fixed
 age. After the first death of two: spending drops to a set share of the plan
 (default 75%), the survivor receives the larger Social Security benefit,
@@ -452,8 +502,17 @@ rules are not counted.
 **Medicare surcharges** (bracket tax mode). From 65 each person on Medicare
 pays an income-related Part B surcharge set by income two years earlier
 (`irmaa` in `data/tax/<year>.json`, thresholds and amounts treated as indexed).
-Part D surcharges are not included. The 2026 tier amounts have not been
-checked against cms.gov or ssa.gov.
+Part D surcharges are not included. The 2026 tiers were checked against SSA's
+operations manual (POMS HI 01101.020) and the $202.90 premium on medicare.gov;
+the CMS fact sheet itself could not be read.
+
+**Validation.** `src/engine/retire/validation.test.ts` compares the model with
+published results: the 30-year, 4% rule on a 50/50 portfolio (about 93% of
+historical starts here against the 95% of the Trinity study, failures only in
+the 1964-1969 starts, worst-case rate about 3.7% against Bengen's 4.15%; our
+10-year Treasury series fell harder in the 1970s than his intermediate bonds),
+the lifespan curve against the SSA table, every Medicare tier boundary, and an
+annuity formula with real growth after inflation.
 
 **Taxes.** In bracket mode (the default) each retirement year is taxed from
 `data/tax/<year>.json`: the standard deduction, ordinary brackets, 0/15/20%

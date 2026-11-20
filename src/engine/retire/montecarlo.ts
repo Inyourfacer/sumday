@@ -42,6 +42,9 @@ export interface SimPerson {
   /** Monthly Social Security at the planned claim age, today's dollars. */
   socialSecurity: number | null;
   claimAge: number;
+  /** Monthly benefit at full retirement age (the "primary insurance amount"), and that age. Used for spousal benefits. */
+  pia?: number | null;
+  fra?: number;
   pension: { monthly: number; startAge: number; cola: boolean } | null;
   rmdStartAge: number;
 }
@@ -110,6 +113,27 @@ export interface SimInput {
    * `targetRatePct` bracket, paying the tax from taxable savings. Needs bracket taxes.
    */
   conversion?: { targetRatePct: number; startYear: number; endYear: number };
+  /**
+   * Early-withdrawal rules (bracket taxes only): a 10% penalty on pre-tax money drawn before 59½ (the rule of 55
+   * exempts workplace plans for anyone who stops working in or after the year they turn 55), and on Roth
+   * conversions drawn within five years, and on Roth growth drawn early. Roth contributions come out penalty-free.
+   * `rothBasisShare` is how much of today's Roth balance is contributions; `freeTraditional` is each person's pre-tax
+   * workplace balance, penalty-free while the rule of 55 applies.
+   */
+  penalties?: { rothBasisShare: number; ruleOf55: boolean; freeTraditional: Record<number, number> };
+  /**
+   * A spouse with a smaller benefit (or none) may receive up to half of the other's full-retirement-age benefit once
+   * both have claimed, cut if taken before their own full retirement age. Only for a married couple.
+   */
+  spousalBenefits?: boolean;
+  /**
+   * Long-term care: each person has a `probability` of needing paid care in the last years of life (a spell averaging
+   * `meanYears`, up to ten), costing `annualCost` a year in today's dollars, rising `extraGrowthPct` a year faster
+   * than inflation. The cost is paid on top of regular spending. Drawn per future, so paired comparisons stay paired.
+   */
+  longTermCare?: { probability: number; meanYears: number; annualCost: number; extraGrowthPct: number };
+  /** Social Security pays only `payablePct` of scheduled benefits from `startYear` on (trust fund shortfall). */
+  ssShortfall?: { startYear: number; payablePct: number };
   /** Add Medicare income-related surcharges (IRMAA) from age 65, from the tax table's tiers. Bracket taxes only. */
   medicare?: boolean;
   /** Last year to show in `bands` and to measure `medianAtEnd` at (default `endYear`). */
@@ -156,6 +180,65 @@ export interface SimResult {
   guardrails: { cutShare: number; medianLowestPct: number | null } | null;
   /** With lifespans drawn: median year the last person dies. */
   medianLastDeathYear: number | null;
+  /**
+   * How badly the plan falls short in the futures where it does: spending that goes unfunded from the year the money runs
+   * out to the end of the plan (after Social Security and pensions, today's dollars). `expected` is the average over every future.
+   */
+  shortfall: { expected: number; failedMedian: number | null; failedP90: number | null; failedMedianYears: number | null };
+  /** One entry per future, when asked for with `perRun`: for comparing two plans on the same futures. */
+  perRun?: PerRun;
+  /** With long-term care modeled: the share of futures where someone needs paid care. */
+  longTermCare: { share: number } | null;
+  /** Early-withdrawal penalties paid over the run, median, and the share of futures that pay any. Null with the rules off. */
+  penalties: { median: number; share: number } | null;
+}
+
+/** Federal additional tax on early withdrawals. */
+export const EARLY_PENALTY = 0.1;
+/** Age by which pre-tax and Roth earnings withdrawals are penalty-free (59½, rounded up to the year). */
+export const PENALTY_FREE_AGE = 60;
+
+/** Outcomes of each simulated future, in the same order for every plan run with the same seed. */
+export interface PerRun {
+  success: Uint8Array;
+  /** Money left at the end after the tax an heir would owe on pre-tax savings. */
+  endAfterTax: Float64Array;
+  lifetimeTax: Float64Array;
+  shortfall: Float64Array;
+}
+
+export interface PairedComparison {
+  /** Share of futures where `other` ends with at least $1,000 more, or at least $1,000 less, than `base`. */
+  better: number;
+  worse: number;
+  medianEndDifference: number;
+  medianTaxDifference: number;
+  /** Futures where the money lasts under `other` but not `base`, and the reverse. */
+  saved: number;
+  lost: number;
+}
+
+/** Compare two plans future by future (they must have been run with the same seed and number of runs). */
+export function compareRuns(base: PerRun, other: PerRun): PairedComparison {
+  const n = base.success.length;
+  const diffs = new Float64Array(n);
+  const taxDiffs = new Float64Array(n);
+  let better = 0;
+  let worse = 0;
+  let saved = 0;
+  let lost = 0;
+  for (let i = 0; i < n; i++) {
+    const d = other.endAfterTax[i]! - base.endAfterTax[i]!;
+    diffs[i] = d;
+    taxDiffs[i] = other.lifetimeTax[i]! - base.lifetimeTax[i]!;
+    if (d >= 100_000) better += 1;
+    else if (d <= -100_000) worse += 1;
+    if (other.success[i] && !base.success[i]) saved += 1;
+    if (!other.success[i] && base.success[i]) lost += 1;
+  }
+  diffs.sort();
+  taxDiffs.sort();
+  return { better: better / n, worse: worse / n, medianEndDifference: Math.round(diffs[Math.floor(n / 2)] ?? 0), medianTaxDifference: Math.round(taxDiffs[Math.floor(n / 2)] ?? 0), saved: saved / n, lost: lost / n };
 }
 
 /** What a heir is assumed to owe on inherited pre-tax money. */
@@ -203,9 +286,26 @@ interface PathOutcome {
   lowestSpending: number;
   /** Pre-tax money left at the end. */
   endTraditional: number;
+  penalties: number;
+  /** Spending left unfunded once the money has run out (today's dollars). */
+  shortfall: number;
 }
 
-function runPath(input: SimInput, years: number[], retireYear: number, deaths: number[] | null = null): PathOutcome {
+/** Employee-side payroll tax (Social Security up to the wage base, Medicare on everything), on a year's gross pay. */
+export function payrollTax(gross: number, input: SimInput): number {
+  const base = input.taxes.brackets?.table.payroll?.socialSecurityWageBase ?? Infinity;
+  return 0.062 * Math.min(gross, base) + 0.0145 * gross;
+}
+
+interface Wages {
+  /** Pay still being earned, minus pre-tax contributions: what income tax is charged on. */
+  taxable: number;
+  /** Pay minus every contribution and payroll tax, before income tax: what arrives to spend. */
+  cash: number;
+}
+const NO_WAGES: Wages = { taxable: 0, cash: 0 };
+
+function runPath(input: SimInput, years: number[], retireYear: number, deaths: number[] | null = null, care: ([number, number] | null)[] | null = null): PathOutcome {
   const T = years.length;
   const totals = new Float64Array(T);
   const { allocation: a, taxes, people } = input;
@@ -253,19 +353,74 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
   let taxPaid = 0;
   let converted = 0;
   let medicare = 0;
+  let penalties = 0;
+  let shortfall = 0;
   let lastTrad = 0;
+
+  // Early-withdrawal bookkeeping (bracket mode only): which pre-tax money is penalty-free, and what the Roth holds.
+  const rules = input.penalties && input.taxes.brackets ? input.penalties : null;
+  const rule55 = people.map((p) => (rules?.ruleOf55 ?? false) && p.retirementAge >= 55);
+  const freeTrad = new Float64Array(n);
+  let rothBasisNom = 0;
+  let layers: { year: number; nominal: number }[] = [];
+  if (rules) {
+    people.forEach((p, k) => {
+      freeTrad[k] = rule55[k] ? Math.min(trad[k]!, rules.freeTraditional[p.id] ?? 0) : 0;
+    });
+    rothBasisNom = roth * rules.rothBasisShare;
+  }
+  /** Remove `nominal` dollars from the Roth ledger in IRS order: contributions, then conversions oldest first. */
+  const consumeRoth = (nominal: number) => {
+    const b = Math.min(rothBasisNom, nominal);
+    rothBasisNom -= b;
+    nominal -= b;
+    for (const l of layers) {
+      if (nominal <= 0) break;
+      const c = Math.min(l.nominal, nominal);
+      l.nominal -= c;
+      nominal -= c;
+    }
+    layers = layers.filter((l) => l.nominal > 1e-6);
+  };
+  const freeAmt = new Float64Array(n);
+  const penAmt = new Float64Array(n);
+  /** Keep the penalty-free pre-tax amounts within what each person still holds. */
+  const clipFree = () => {
+    for (let k = 0; k < n; k++) freeTrad[k] = Math.min(freeTrad[k]!, trad[k]!);
+  };
   const totalNow = () => {
     let total = taxable + roth + hsa;
     for (let k = 0; k < n; k++) total += trad[k]!;
     return total;
   };
   const spendAt = (t: number) => (input.spending[t] ?? 0) * survivorFactor(input.startYear + t) * mult;
+  /** Spending that nothing covers once the savings are gone: what is left after Social Security and pensions, net of their tax. */
+  const unfundedAt = (t: number, f: number): number => {
+    const year = input.startYear + t;
+    const inc = incomeFor(year, f);
+    const tax = input.taxes.brackets
+      ? incomeTax({ ordinary: inc.pension / f, socialSecurity: inc.ss / f, gains: 0 }, input.taxes.brackets, cumInfl).total * f
+      : ord * inc.pension;
+    return Math.max(0, f * (spendAt(t) + careAt(year)) - (inc.ss + inc.pension - tax));
+  };
+  const ltc = input.longTermCare;
+  /** Paid long-term care this year, for anyone in a spell of it. */
+  const careAt = (year: number): number => {
+    if (!care || !ltc) return 0;
+    let cost = 0;
+    for (let k = 0; k < n; k++) {
+      const w = care[k];
+      if (w && year >= w[0] && year <= w[1] && alive(k, year)) cost += ltc.annualCost * (1 + ltc.extraGrowthPct / 100) ** (year - input.startYear);
+    }
+    return cost;
+  };
 
   /** Social Security and pension income this year, after the partial-year share `f`. */
   const incomeFor = (year: number, f: number): { ss: number; pension: number } => {
     let ss = 0;
     let pension = 0;
     const anyGone = deaths !== null && people.some((_, k) => !alive(k, year));
+    const payable = input.ssShortfall && year >= input.ssShortfall.startYear ? input.ssShortfall.payablePct / 100 : 1;
     for (let k = 0; k < n; k++) {
       if (!alive(k, year)) continue;
       const p = people[k]!;
@@ -275,7 +430,17 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
         // A survivor receives the larger of the two benefits.
         for (let j = 0; j < n; j++) if (!alive(j, year) && people[j]!.socialSecurity !== null) benefit = Math.max(benefit, people[j]!.socialSecurity! * 12);
       }
-      ss += f * benefit;
+      if (input.spousalBenefits && n === 2 && age >= p.claimAge) {
+        // Up to half of the other's full-retirement-age benefit, less one's own, once the other has claimed.
+        const other = people[1 - k]!;
+        if (alive(1 - k, year) && other.pia != null && year - other.birthYear >= other.claimAge) {
+          const excess = Math.max(0, other.pia / 2 - (p.pia ?? 0));
+          const monthsEarly = Math.max(0, Math.round(((p.fra ?? p.claimAge) - p.claimAge) * 12));
+          const cut = ((Math.min(monthsEarly, 36) * 25) / 36 + (Math.max(monthsEarly - 36, 0) * 5) / 12) / 100;
+          benefit += excess * 12 * (1 - cut);
+        }
+      }
+      ss += f * benefit * payable;
       if (p.pension && age >= p.pension.startAge) pension += (f * p.pension.monthly * 12) / (p.pension.cola ? 1 : cumInfl);
     }
     return { ss, pension };
@@ -313,10 +478,16 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     return need;
   };
   /** Flat-rate retirement year: spending minus income, grossed up at a flat rate. */
-  const retireFlat = (t: number, f: number): boolean => {
+  const retireFlat = (t: number, f: number, wages: Wages): boolean => {
     const year = input.startYear + t;
     const income = incomeFor(year, f);
-    let need = f * spendAt(t) - income.ss - income.pension;
+    let need = f * (spendAt(t) + careAt(year)) - income.ss - income.pension - (wages.cash - ord * wages.taxable);
+    // Pay beyond spending is saved.
+    let leftover = 0;
+    if (need < 0) {
+      leftover = -need;
+      need = 0;
+    }
 
     // Required minimums come out whether needed or not; any extra is reinvested.
     for (let k = 0; k < n; k++) {
@@ -334,6 +505,10 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
         need = 0;
       } else need -= net;
     }
+    if (leftover > 0) {
+      taxable += leftover;
+      basisNominal += leftover * cumInfl;
+    }
 
     return withdraw(need) <= 0.5;
   };
@@ -344,7 +519,7 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
    * from taxable, pre-tax, Roth and HSA in that order, with the amount found so
    * that spending is met after the tax that draw itself causes.
    */
-  const retireWithBrackets = (setup0: TaxSetup, t: number, f: number): boolean => {
+  const retireWithBrackets = (setup0: TaxSetup, t: number, f: number, wages: Wages): boolean => {
     const year = input.startYear + t;
     // The year after the first death, the survivor files as a single person.
     const widowed = deaths !== null && people.some((_, k) => !alive(k, year));
@@ -357,7 +532,7 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
       const covered = people.filter((p, k) => alive(k, year) && year - p.birthYear >= 65).length;
       medicareCost = f * monthly * 12 * covered;
     }
-    const spend = f * spendAt(t) + medicareCost;
+    const spend = f * (spendAt(t) + careAt(year)) + medicareCost;
     const { ss, pension } = incomeFor(year, f);
     let rmdGross = 0;
     for (let k = 0; k < n; k++) {
@@ -374,24 +549,68 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
       const full = incomeTax({ ordinary: ordinary / f, socialSecurity: ss / f, gains: gains / f }, setup, cumInfl).total;
       return full * f;
     };
-    const cash = ss + pension + rmdGross;
+    clipFree();
+    const baseOrd = pension + rmdGross + wages.taxable;
+    const cash = ss + pension + rmdGross + wages.cash;
     const basisReal = Math.min(taxable, basisNominal / cumInfl);
     const gainShare = taxable > 0 ? Math.max(0, 1 - basisReal / taxable) : 0;
     let tradTotal = 0;
     for (let k = 0; k < n; k++) tradTotal += trad[k]!;
 
-    /** What drawing `g` in total (taxable, then pre-tax, Roth, HSA) leaves after tax, and the split. */
+    // What can be drawn without penalty. Anyone from 60 on, and the rule of 55 for workplace plans, is free of it.
+    let tradFreeTotal = 0;
+    let tradPenTotal = 0;
+    for (let k = 0; k < n; k++) {
+      const early = rules !== null && year - people[k]!.birthYear < PENALTY_FREE_AGE;
+      freeAmt[k] = early ? freeTrad[k]! : trad[k]!;
+      penAmt[k] = trad[k]! - freeAmt[k]!;
+      tradFreeTotal += freeAmt[k]!;
+      tradPenTotal += penAmt[k]!;
+    }
+    // Roth money is restricted only while everyone alive is under 60 (an owner's age isn't tracked per account).
+    let rothFree = roth;
+    let rothConv = 0;
+    let rothEarn = 0;
+    if (rules && roth > 0 && people.every((p, k) => !alive(k, year) || year - p.birthYear < PENALTY_FREE_AGE)) {
+      let seasoned = 0;
+      let unseasoned = 0;
+      for (const l of layers) {
+        if (year - l.year >= 5) seasoned += l.nominal;
+        else unseasoned += l.nominal;
+      }
+      rothFree = Math.min(roth, (rothBasisNom + seasoned) / cumInfl);
+      rothConv = Math.min(roth - rothFree, unseasoned / cumInfl);
+      rothEarn = roth - rothFree - rothConv;
+    }
+
+    /**
+     * What drawing `g` in total leaves after tax and penalty, and the split. The order is taxable money, penalty-free
+     * pre-tax money, penalty-free Roth money, then (before 60) conversions inside their five years at 10%, pre-tax
+     * money at tax plus 10%, Roth growth at tax plus 10%, and last the HSA.
+     */
     const draw = (g: number) => {
-      const fromTaxable = Math.min(g, taxable);
-      let rest = g - fromTaxable;
-      const fromTrad = Math.min(rest, tradTotal);
-      rest -= fromTrad;
-      const fromRoth = Math.min(rest, roth);
-      rest -= fromRoth;
+      let rest = g;
+      const fromTaxable = Math.min(rest, taxable);
+      rest -= fromTaxable;
+      const fromTradFree = Math.min(rest, tradFreeTotal);
+      rest -= fromTradFree;
+      const fromRothFree = Math.min(rest, rothFree);
+      rest -= fromRothFree;
+      const fromRothConv = Math.min(rest, rothConv);
+      rest -= fromRothConv;
+      const fromTradPen = Math.min(rest, tradPenTotal);
+      rest -= fromTradPen;
+      const fromRothEarn = Math.min(rest, rothEarn);
+      rest -= fromRothEarn;
       const fromHsa = Math.min(rest, hsa);
       rest -= fromHsa;
-      const tax = taxOn(pension + rmdGross + fromTrad, fromTaxable * gainShare);
-      return { fromTaxable, fromTrad, fromRoth, fromHsa, unmet: rest, net: cash + g - rest - tax };
+      const fromTrad = fromTradFree + fromTradPen;
+      const tax = taxOn(baseOrd + fromTrad + fromRothEarn, fromTaxable * gainShare);
+      const penalty = EARLY_PENALTY * (fromRothConv + fromTradPen + fromRothEarn);
+      return {
+        fromTaxable, fromTradFree, fromTradPen, fromTrad, fromRothFree, fromRothConv, fromRothEarn, fromRoth: fromRothFree + fromRothConv + fromRothEarn, fromHsa,
+        unmet: rest, penalty, ordinary: fromTrad + fromRothEarn, net: cash + g - rest - tax - penalty,
+      };
     };
 
     /** Roth conversion on top of this year's income: fill the chosen bracket, paying the tax from taxable savings. */
@@ -427,8 +646,15 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
         owe -= gross * (1 - share * cg);
       }
       const before = tradLeft;
-      for (let k = 0; k < n; k++) trad[k] = trad[k]! - amount * (trad[k]! / before);
-      roth += Math.max(0, amount - Math.max(0, owe));
+      for (let k = 0; k < n; k++) {
+        const share = amount * (trad[k]! / before);
+        // The converted money leaves the penalty-free part in proportion.
+        freeTrad[k] = trad[k]! > 0 ? freeTrad[k]! * (1 - share / trad[k]!) : 0;
+        trad[k] = trad[k]! - share;
+      }
+      const net = Math.max(0, amount - Math.max(0, owe));
+      roth += net;
+      if (rules) layers.push({ year, nominal: net * cumInfl });
       converted += amount;
       return amount;
     };
@@ -447,8 +673,8 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
       const surplus = none.net - spend;
       taxable += surplus;
       basisNominal += surplus * cumInfl;
-      const c = convert(pension + rmdGross, 0);
-      record(pension + rmdGross + c, 0);
+      const c = convert(baseOrd, 0);
+      record(baseOrd + c, 0);
       return true;
     }
     const all = taxable + tradTotal + roth + hsa;
@@ -478,10 +704,18 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
       basisNominal *= 1 - d.fromTaxable / taxable;
       taxable -= d.fromTaxable;
     }
-    if (d.fromTrad > 0) for (let k = 0; k < n; k++) trad[k] = trad[k]! - d.fromTrad * (trad[k]! / tradTotal);
+    if (d.fromTradFree > 0)
+      for (let k = 0; k < n; k++) {
+        const x = (d.fromTradFree * freeAmt[k]!) / tradFreeTotal;
+        trad[k] = trad[k]! - x;
+        freeTrad[k] = Math.max(0, freeTrad[k]! - x);
+      }
+    if (d.fromTradPen > 0) for (let k = 0; k < n; k++) trad[k] = trad[k]! - (d.fromTradPen * penAmt[k]!) / tradPenTotal;
     roth -= d.fromRoth;
+    if (rules && d.fromRoth > 0) consumeRoth(d.fromRoth * cumInfl);
     hsa -= d.fromHsa;
-    const ordinaryNow = pension + rmdGross + d.fromTrad;
+    penalties += d.penalty;
+    const ordinaryNow = baseOrd + d.ordinary;
     const gainsNow = d.fromTaxable * gainShare;
     const c = convert(ordinaryNow, gainsNow);
     record(ordinaryNow + c, gainsNow);
@@ -498,13 +732,14 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     cumInfl *= infl1;
     // Only the rest of the current year is simulated in year 0.
     const f = t === 0 ? Math.min(1, Math.max(0, input.yearFraction ?? 1)) : 1;
-    if (depletedAt !== null) {
-      totals[t] = 0;
-      continue;
-    }
     // Everyone has died: the plan is complete and what is left is what is left.
     if (year > lastDeath) {
       totals[t] = totals[t - 1] ?? 0;
+      continue;
+    }
+    if (depletedAt !== null) {
+      shortfall += unfundedAt(t, f);
+      totals[t] = 0;
       continue;
     }
     if (deaths) {
@@ -517,32 +752,52 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
         if (heir >= 0) {
           trad[heir] = trad[heir]! + trad[k]!;
           trad[k] = 0;
+          freeTrad[k] = 0;
         }
       }
     }
     const growth =
       a.stocks * ((1 + h.stocks) / infl1 - 1) + a.bonds * ((1 + h.bonds) / infl1 - 1) + a.cash * ((1 + h.bills) / infl1 - 1) - input.feePct / 100 - ((a.stocks + a.bonds) * (input.returnHaircutPct ?? 0)) / 100;
 
-    // Working years: contributions in.
+    // Working years: contributions in. Pay still coming in once someone has retired is counted as income.
     let anyoneWorking = false;
+    let wGross = 0;
+    let wPretax = 0;
+    let wRoth = 0;
+    let wHsa = 0;
     for (let k = 0; k < n; k++) {
       const p = people[k]!;
       const income = pay[k]!;
       if (income > 0 && year - p.birthYear < p.retirementAge && alive(k, year)) {
         anyoneWorking = true;
-        trad[k] = trad[k]! + f * (income * (p.pretaxPct / 100) + income * matchShare[k]!);
-        roth += f * income * (p.rothPct / 100);
+        const toTrad = f * (income * (p.pretaxPct / 100) + income * matchShare[k]!);
+        trad[k] = trad[k]! + toTrad;
+        if (rule55[k]) freeTrad[k] = freeTrad[k]! + toTrad;
+        const toRoth = f * income * (p.rothPct / 100);
+        roth += toRoth;
+        rothBasisNom += toRoth * cumInfl;
         hsa += f * p.hsaPayroll;
+        wGross += f * income;
+        wPretax += f * income * (p.pretaxPct / 100);
+        wRoth += toRoth;
+        wHsa += f * p.hsaPayroll;
         // Next year's pay: the raise, less this year's inflation.
         pay[k] = income * ((1 + p.raisePct / 100) / infl1);
       }
     }
-    if (anyoneWorking) {
+    // Once one earner has retired the plan's spare money is gone: savings follow from the cash left after spending.
+    const retiredWorker = people.some((p, k) => p.income > 0 && year - p.birthYear >= p.retirementAge && alive(k, year));
+    const partial = year < retireYear && retiredWorker && anyoneWorking;
+    if (anyoneWorking && !retiredWorker) {
       taxable += f * extra.taxable;
       basisNominal += f * extra.taxable * cumInfl;
       roth += f * extra.roth;
+      rothBasisNom += f * extra.roth * cumInfl;
       hsa += f * extra.hsa;
-      for (let k = 0; k < n; k++) trad[k] = trad[k]! + f * extraTrad[k]!;
+      for (let k = 0; k < n; k++) {
+        trad[k] = trad[k]! + f * extraTrad[k]!;
+        if (rule55[k]) freeTrad[k] = freeTrad[k]! + f * extraTrad[k]!;
+      }
     }
 
     // One-time amounts this year.
@@ -552,6 +807,7 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
       basisNominal += lump * cumInfl;
     } else if (lump < 0 && withdraw(-lump) > 0.5) {
       depletedAt = year;
+      shortfall += unfundedAt(t, f);
       totals[t] = 0;
       continue;
     }
@@ -559,8 +815,11 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     if (year < retireYear) magiHistory[t] = pay.reduce((s, v) => s + v, 0);
 
     // Retirement: withdraw what income doesn't cover.
-    if (year >= retireYear) {
-      if (guard) {
+    if (year >= retireYear || partial) {
+      const wages: Wages = partial
+        ? { taxable: wGross - wPretax - wHsa, cash: wGross - wPretax - wRoth - wHsa - payrollTax(wGross / f, input) * f }
+        : NO_WAGES;
+      if (guard && !partial) {
         const income = incomeFor(year, 1);
         const base = (input.spending[t] ?? 0) * survivorFactor(year);
         const port = totalNow();
@@ -573,9 +832,10 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
           lowest = Math.min(lowest, mult);
         }
       }
-      const funded = input.taxes.brackets ? retireWithBrackets(input.taxes.brackets, t, f) : retireFlat(t, f);
+      const funded = input.taxes.brackets ? retireWithBrackets(input.taxes.brackets, t, f, wages) : retireFlat(t, f, wages);
       if (!funded) {
         depletedAt = year;
+        shortfall += unfundedAt(t, f);
         totals[t] = 0;
         continue;
       }
@@ -589,13 +849,14 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     let total = taxable + roth + hsa;
     for (let k = 0; k < n; k++) {
       trad[k] = trad[k]! * g;
+      freeTrad[k] = freeTrad[k]! * g;
       total += trad[k]!;
     }
     totals[t] = total;
     lastTrad = 0;
     for (let k = 0; k < n; k++) lastTrad += trad[k]!;
   }
-  return { totals, depletedAt, taxPaid, converted, medicare, lowestSpending: lowest, endTraditional: lastTrad };
+  return { totals, depletedAt, taxPaid, converted, medicare, lowestSpending: lowest, endTraditional: lastTrad, penalties, shortfall };
 }
 
 function percentile(sorted: Float64Array, p: number): number {
@@ -616,13 +877,30 @@ function drawDeathYears(input: SimInput, run: number): number[] {
   });
 }
 
+/** Spells of paid care: the last years of life for those who need it, as [first year, last year]. */
+function drawCare(input: SimInput, run: number, deaths: number[] | null): ([number, number] | null)[] {
+  const c = input.longTermCare!;
+  const horizonEnd = input.displayEndYear ?? input.endYear;
+  return input.people.map((_, k) => {
+    const rand = seededRandom((input.seed ^ Math.imul(run + 1, 0x27d4eb2f) ^ Math.imul(k + 1, 0x165667b1)) >>> 0);
+    rand();
+    rand();
+    const needs = rand() < c.probability;
+    const u = rand();
+    if (!needs) return null;
+    const length = Math.min(10, 1 + Math.floor(-Math.log(Math.max(u, 1e-12)) * Math.max(0, c.meanYears - 1)));
+    const end = deaths ? deaths[k]! : horizonEnd;
+    return [end - length + 1, end];
+  });
+}
+
 const medianOf = (xs: number[]): number => {
   if (xs.length === 0) return 0;
   const sorted = Float64Array.from(xs).sort();
   return sorted[Math.floor(sorted.length / 2)]!;
 };
 
-export function simulate(input: SimInput, options: { bands?: boolean } = {}): SimResult {
+export function simulate(input: SimInput, options: { bands?: boolean; perRun?: boolean } = {}): SimResult {
   const T = Math.max(1, input.endYear - input.startYear + 1);
   const rand = seededRandom(input.seed);
   const retireYear = retirementYear(input);
@@ -638,17 +916,33 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
   const endsAfterTax: number[] = [];
   const lowests: number[] = [];
   const lastDeaths: number[] = [];
+  const penaltyTotals: number[] = [];
+  let careRuns = 0;
+  const shortfalls: number[] = [];
+  const perRun: PerRun | undefined = options.perRun
+    ? { success: new Uint8Array(input.runs), endAfterTax: new Float64Array(input.runs), lifetimeTax: new Float64Array(input.runs), shortfall: new Float64Array(input.runs) }
+    : undefined;
 
   for (let r = 0; r < input.runs; r++) {
     const years = sequence(input.history.length, T, Math.max(1, input.blockLength), rand);
     const deaths = input.mortality ? drawDeathYears(input, r) : null;
     if (deaths) lastDeaths.push(Math.max(...deaths));
-    const { totals, depletedAt, taxPaid, converted, medicare, lowestSpending, endTraditional } = runPath(input, years, retireYear, deaths);
+    const care = input.longTermCare ? drawCare(input, r, deaths) : null;
+    if (care?.some((w) => w !== null)) careRuns += 1;
+    const { totals, depletedAt, taxPaid, converted, medicare, lowestSpending, endTraditional, penalties, shortfall } = runPath(input, years, retireYear, deaths, care);
     taxes.push(taxPaid);
+    penaltyTotals.push(penalties);
     conversions.push(converted);
     surcharges.push(medicare);
     lowests.push(lowestSpending);
     endsAfterTax.push(depletedAt === null ? Math.max(0, totals[T - 1]! - endTraditional * HEIR_TAX_RATE) : 0);
+    if (depletedAt !== null) shortfalls.push(shortfall);
+    if (perRun) {
+      perRun.success[r] = depletedAt === null ? 1 : 0;
+      perRun.endAfterTax[r] = endsAfterTax[r]!;
+      perRun.lifetimeTax[r] = taxPaid;
+      perRun.shortfall[r] = depletedAt === null ? 0 : shortfall;
+    }
     if (depletedAt === null) {
       successes += 1;
       if (totals[T - 1]! < 3 * lastSpend) fragile += 1;
@@ -690,6 +984,20 @@ export function simulate(input: SimInput, options: { bands?: boolean } = {}): Si
     medianEndAfterTax: Math.round(medianOf(endsAfterTax)),
     guardrails: input.guardrails ? { cutShare: cuts.length / input.runs, medianLowestPct: cuts.length ? Math.round(medianOf(cuts) * 100) : null } : null,
     medianLastDeathYear: lastDeaths.length ? medianOf(lastDeaths) : null,
+    shortfall: (() => {
+      const sorted = Float64Array.from(shortfalls).sort();
+      const first = input.spending[Math.max(0, retireYear - input.startYear)] ?? 0;
+      const failedMedian = sorted.length ? Math.round(sorted[Math.floor(sorted.length / 2)]!) : null;
+      return {
+        expected: Math.round(shortfalls.reduce((s, x) => s + x, 0) / input.runs),
+        failedMedian,
+        failedP90: sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]!) : null,
+        failedMedianYears: failedMedian !== null && first > 0 ? Math.round((failedMedian / first) * 10) / 10 : null,
+      };
+    })(),
+    ...(perRun ? { perRun } : {}),
+    longTermCare: input.longTermCare ? { share: careRuns / input.runs } : null,
+    penalties: input.penalties && input.taxes.brackets ? { median: Math.round(medianOf(penaltyTotals)), share: penaltyTotals.filter((x) => x > 0.5).length / input.runs } : null,
   };
 }
 
@@ -718,7 +1026,7 @@ export function affordableSpending(input: SimInput, target: number, retireYear: 
   const t0 = Math.max(0, retireYear - input.startYear);
   const rate = (m: number) =>
     simulate({ ...input, runs, spending: input.spending.map((s, t) => (t >= t0 ? s * m : s)) }, { bands: false }).successRate;
-  const m = solve(0, 3, (x) => rate(x) >= target, 12, false);
+  const m = solve(0, 3, (x) => rate(x) >= target, 9, false);
   return m === null ? 0 : Math.round(reference * m);
 }
 
@@ -783,7 +1091,7 @@ export function whatIfs(input: SimInput, target: number, base: SimResult, runs =
   if (base.successRate < target) {
     const working = input.people.some((p) => p.income > 0 && p.birthYear + p.retirementAge > input.startYear);
     const extra = working
-      ? solve(0, 240_000_00, (x) => rate({ ...quick, extraSavings: { ...quick.extraSavings, taxable: quick.extraSavings.taxable + x } }) >= target, 14, true)
+      ? solve(0, 240_000_00, (x) => rate({ ...quick, extraSavings: { ...quick.extraSavings, taxable: quick.extraSavings.taxable + x } }) >= target, 10, true)
       : null;
     const later = retireAt.find((r) => r.shift > 0 && r.successRate >= target)?.shift ?? null;
     const spendLess = sustainableSpending !== null && sustainableSpending < firstSpend ? firstSpend - sustainableSpending : null;

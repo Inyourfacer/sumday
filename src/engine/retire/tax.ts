@@ -33,6 +33,8 @@ export interface TaxTable {
   year: number;
   source: string;
   irmaa?: IrmaaTable;
+  /** Employee payroll tax: Social Security applies up to this yearly pay (cents). */
+  payroll?: { socialSecurityWageBase: number; source: string };
   ssThresholds: Record<FilingStatus, [number, number]>;
   filing: Record<FilingStatus, FilingTable>;
 }

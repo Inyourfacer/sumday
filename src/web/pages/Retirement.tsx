@@ -44,7 +44,10 @@ function SpendingEditor({ inputs, onSaved }: { inputs: Inputs; onSaved: () => vo
 
   return (
     <details className="panel tight">
-      <summary>Retirement spending: {money(s.firstYear)} a year when you retire{s.oneOffs.length > 0 ? ", plus one-off costs" : ""}</summary>
+      <summary>
+        Retirement spending: {money(s.firstYear)} a year when you retire{s.oneOffs.length > 0 ? ", plus one-off costs" : ""}
+        <span className="muted small"> (today's budget with healthcare costs grown to then)</span>
+      </summary>
       <p className="muted small">
         Starts from what you spend now (budgets where set, otherwise recent averages). Change any category for retirement; blank means
         the same as today. All amounts are per year in today's dollars.
@@ -185,6 +188,12 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
   const [spread, setSpread] = useState<number | null>(s.lifeSpread);
   const [survivor, setSurvivor] = useState<number | null>(s.survivorSpendingPct);
   const [rails, setRails] = useState(s.guardrails);
+  const [rothBasis, setRothBasis] = useState<number | null>(s.rothBasisPct);
+  const [cut, setCut] = useState(s.ssShortfall);
+  const [hcShare, setHcShare] = useState<number | null>(s.healthcareSharePct);
+  const [hcGrowth, setHcGrowth] = useState<number | null>(s.healthcareGrowthPct);
+  const [drift, setDrift] = useState<number | null>(s.otherSpendingDriftPct);
+  const [care, setCare] = useState(s.longTermCare);
   const [error, setError] = useState<string>();
   const save = async (patch: Record<string, unknown>) => {
     try {
@@ -297,6 +306,89 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             </Field>
           </>
         )}
+        {s.taxMode === "brackets" && (
+          <>
+            <label className="check wide">
+              <input type="checkbox" checked={s.earlyWithdrawalRules} onChange={(e) => void save({ earlyWithdrawalRules: e.target.checked })} />
+              Charge the 10% early-withdrawal penalty (pre-tax money before 60, Roth growth, conversions inside five years)
+            </label>
+            {s.earlyWithdrawalRules && (
+              <>
+                <label className="check wide">
+                  <input type="checkbox" checked={s.ruleOf55} onChange={(e) => void save({ ruleOf55: e.target.checked })} />
+                  Workplace plans are open without penalty if you stop working in or after the year you turn 55
+                </label>
+                <Field label="Share of today's Roth that is your own contributions" hint="Contributions come out tax- and penalty-free. If much of the balance is growth, enter less.">
+                  <span onBlur={() => rothBasis !== null && rothBasis !== s.rothBasisPct && void save({ rothBasisPct: rothBasis })}>
+                    <NumberInput value={rothBasis} min={0} max={100} suffix="%" ariaLabel="Roth contributions share" onChange={setRothBasis} />
+                  </span>
+                </Field>
+              </>
+            )}
+          </>
+        )}
+        {(data.inputs?.people.length ?? 0) === 2 && (
+          <label className="check wide">
+            <input type="checkbox" checked={s.spousalBenefits} onChange={(e) => void save({ spousalBenefits: e.target.checked })} />
+            Spousal Social Security: a spouse with a smaller benefit gets up to half of the other's
+          </label>
+        )}
+        <label className="check wide">
+          <input type="checkbox" checked={cut.enabled} onChange={(e) => { const next = { ...cut, enabled: e.target.checked }; setCut(next); void save({ ssShortfall: next }); }} />
+          Assume Social Security is cut when its trust fund runs short
+        </label>
+        {cut.enabled && (
+          <>
+            <Field label="Cut starts in" hint="The 2026 Trustees Report has the retirement fund short in late 2032.">
+              <span onBlur={() => cut !== s.ssShortfall && void save({ ssShortfall: cut })}>
+                <NumberInput value={cut.startYear} min={2026} max={2100} ariaLabel="Social Security cut start year" onChange={(v) => setCut({ ...cut, startYear: v ?? cut.startYear })} />
+              </span>
+            </Field>
+            <Field label="Share of scheduled benefits still paid" hint="About 78% at first in the Trustees Report, falling later.">
+              <span onBlur={() => cut !== s.ssShortfall && void save({ ssShortfall: cut })}>
+                <NumberInput value={cut.payablePct} min={30} max={100} suffix="%" ariaLabel="Share of benefits paid" onChange={(v) => setCut({ ...cut, payablePct: v ?? cut.payablePct })} />
+              </span>
+            </Field>
+          </>
+        )}
+        <Field label="Healthcare share of spending" hint="The part of retirement spending that is medical costs and insurance.">
+          <span onBlur={() => hcShare !== null && hcShare !== s.healthcareSharePct && void save({ healthcareSharePct: hcShare })}>
+            <NumberInput value={hcShare} min={0} max={60} suffix="%" ariaLabel="Healthcare share of spending" onChange={setHcShare} />
+          </span>
+        </Field>
+        <Field label="Healthcare cost growth above inflation" hint="Per year, starting today. Healthcare has usually outpaced prices.">
+          <span onBlur={() => hcGrowth !== null && hcGrowth !== s.healthcareGrowthPct && void save({ healthcareGrowthPct: hcGrowth })}>
+            <NumberInput value={hcGrowth} min={0} max={5} step={0.5} suffix="% a year" ariaLabel="Healthcare growth above inflation" onChange={setHcGrowth} />
+          </span>
+        </Field>
+        <Field label="Other spending change after retiring" hint="Real change per year. Many retirees spend a little less each year; try -1 to see.">
+          <span onBlur={() => drift !== null && drift !== s.otherSpendingDriftPct && void save({ otherSpendingDriftPct: drift })}>
+            <NumberInput value={drift} min={-3} max={3} step={0.5} suffix="% a year" ariaLabel="Other spending change" onChange={setDrift} />
+          </span>
+        </Field>
+        <label className="check wide">
+          <input type="checkbox" checked={care.enabled} onChange={(e) => { const next = { ...care, enabled: e.target.checked }; setCare(next); void save({ longTermCare: next }); }} />
+          Include a chance of paid long-term care near the end of life
+        </label>
+        {care.enabled && (
+          <>
+            <Field label="Chance each person needs paid care" hint="Percent. These are rough defaults to adjust, not a quote.">
+              <span onBlur={() => care !== s.longTermCare && void save({ longTermCare: care })}>
+                <NumberInput value={care.probabilityPct} min={0} max={100} suffix="%" ariaLabel="Chance of long-term care" onChange={(v) => setCare({ ...care, probabilityPct: v ?? care.probabilityPct })} />
+              </span>
+            </Field>
+            <Field label="Years of care, on average" hint="Spells run up to ten years.">
+              <span onBlur={() => care !== s.longTermCare && void save({ longTermCare: care })}>
+                <NumberInput value={care.meanYears} min={1} max={8} step={0.5} suffix="years" ariaLabel="Years of care" onChange={(v) => setCare({ ...care, meanYears: v ?? care.meanYears })} />
+              </span>
+            </Field>
+            <Field label="Cost per year of care" hint="In today's dollars, on top of regular spending.">
+              <span onBlur={() => care !== s.longTermCare && void save({ longTermCare: care })}>
+                <MoneyInput value={care.annualCost} ariaLabel="Yearly cost of care" onChange={(v) => setCare({ ...care, annualCost: v ?? care.annualCost })} />
+              </span>
+            </Field>
+          </>
+        )}
         <label className="check wide">
           <input type="checkbox" checked={s.includePlanSavings} onChange={(e) => void save({ includePlanSavings: e.target.checked })} />
           Include the savings Next best moves recommends ({money((data.inputs?.extraSavings.total ?? 0) / 12)}/mo now)
@@ -336,7 +428,11 @@ function Assumptions({ data, onSaved }: { data: RetirementResponse; onSaved: () 
             ? `Medicare surcharges (IRMAA) are added from 65, set by income two years earlier. ${data.sources.medicare ?? ""}`
             : "Medicare surcharges are only counted with the bracket tax model."}
         </li>
-        <li>Not included yet: the extra deduction at 65+, tax drag while saving, spousal Social Security benefits before a death, long-term care costs.</li>
+        <li>
+          While one of two earners has stopped working, the other's pay (less payroll tax, contributions and income tax) goes toward spending and the rest comes from savings; the
+          spare-money savings from Next best moves stop then. Healthcare spending grows {s.healthcareGrowthPct}% a year above inflation from today.
+        </li>
+        <li>Not included yet: the extra deduction at 65+, tax drag while saving, penalty exceptions such as 72(t) payments, Part D surcharges, and the cost of losing health-insurance subsidies.</li>
       </ul>
     </details>
   );
@@ -488,7 +584,8 @@ function ConversionPanel({ onChanged }: { onChanged: () => void }) {
       <h2>Roth conversions</h2>
       <p className="muted small">
         Each year from {c.window.from} to {c.window.to}, before required minimums start, move pre-tax money to Roth until your taxable income reaches the top of the
-        bracket below. You pay the tax now, from taxable savings, to owe less later. The numbers use the same random futures for every row.
+        bracket below. You pay the tax now, from taxable savings, to owe less later. Every row replays the same random futures, so the last column compares each row with
+        "No conversions" one future at a time.
       </p>
       <table className="table">
         <thead>
@@ -499,6 +596,7 @@ function ConversionPanel({ onChanged }: { onChanged: () => void }) {
             <th className="num">Income tax over retirement</th>
             <th className="num">Medicare surcharges</th>
             <th className="num">End value after heirs' tax</th>
+            <th className="num">Better off than no conversions</th>
             <th />
           </tr>
         </thead>
@@ -516,6 +614,24 @@ function ConversionPanel({ onChanged }: { onChanged: () => void }) {
               </td>
               <td className="num">{o.medianMedicareSurcharge === null ? "—" : money(o.medianMedicareSurcharge)}</td>
               <td className="num">{money(o.medianEndAfterTax)}</td>
+              <td className="num">
+                {o.paired === null ? (
+                  "—"
+                ) : (
+                  <>
+                    {pct(o.paired.better)} of futures{" "}
+                    <span className="muted small">
+                      (worse in {pct(o.paired.worse)}; typical {o.paired.medianEndDifference >= 0 ? "+" : "−"}
+                      {money(Math.abs(o.paired.medianEndDifference))})
+                    </span>
+                    {(o.paired.saved > 0 || o.paired.lost > 0) && (
+                      <div className="muted small">
+                        Saves {pct(o.paired.saved)} of futures, loses {pct(o.paired.lost)}
+                      </div>
+                    )}
+                  </>
+                )}
+              </td>
               <td>
                 {o.ratePct !== c.chosen && (
                   <button type="button" className="btn small" onClick={() => void choose(o.ratePct)}>
@@ -530,8 +646,8 @@ function ConversionPanel({ onChanged }: { onChanged: () => void }) {
       <ErrorNote message={error} />
       <p className="muted small">
         Look for the row where the chance it lasts and the end value rise without a jump in Medicare surcharges. Conversions raise income now, which can
-        also cost health-insurance subsidies before 65 and state tax, neither of which is counted here. Every row replays the same 3,000 futures, so
-        gaps of a point or two are still within the simulation's own noise. This is a comparison to take to a tax professional, not a recommendation to convert.
+        also cost health-insurance subsidies before 65 and state tax, neither of which is counted here. The comparison is paired, so a share of futures
+        near 50% means no clear difference. This is a comparison to take to a tax professional, not a recommendation to convert.
       </p>
     </section>
   );
@@ -618,6 +734,31 @@ export function RetirementPage() {
                 : `money runs out around age ${ageOf(r.medianDepletionYear)} (median)${r.earlyDepletionYear !== null ? `, as early as ${ageOf(r.earlyDepletionYear)} in the worst tenth` : ""}`}
             </dd>
           </div>
+          {r.shortfall.failedMedian !== null && (
+            <div>
+              <dt>How big the shortfall is</dt>
+              <dd>
+                {money(r.shortfall.failedMedian)} of spending goes unfunded in the typical failing future
+                {r.shortfall.failedMedianYears !== null && ` (about ${r.shortfall.failedMedianYears} years of spending)`}
+                {r.shortfall.failedP90 !== null && `, ${money(r.shortfall.failedP90)} in the worst tenth of failures`}
+                <span className="muted small"> · {money(r.shortfall.expected)} on average across all futures</span>
+              </dd>
+            </div>
+          )}
+          {r.penalties && r.penalties.share >= 0.01 && (
+            <div>
+              <dt>Early-withdrawal penalties</dt>
+              <dd>
+                {pct(r.penalties.share)} of futures pay some; {money(r.penalties.median)} median
+              </dd>
+            </div>
+          )}
+          {r.longTermCare && (
+            <div>
+              <dt>Long-term care</dt>
+              <dd>{pct(r.longTermCare.share)} of futures include paid care for at least one of you</dd>
+            </div>
+          )}
           {r.guardrails && (
             <div>
               <dt>Spending cuts under your guardrails</dt>
@@ -667,6 +808,22 @@ export function RetirementPage() {
                 <dd>
                   {pct(d.checks.fixedHorizon.successRate)} <span className="muted small">no random lifespans</span>
                 </dd>
+              </div>
+            )}
+            {d.checks.ssShortfall && (
+              <div>
+                <dt>
+                  {d.checks.ssShortfall.applied
+                    ? "If Social Security pays in full"
+                    : `If Social Security pays ${d.checks.ssShortfall.payablePct}% from ${d.checks.ssShortfall.startYear}`}
+                </dt>
+                <dd>{pct(d.checks.ssShortfall.otherSuccessRate)}</dd>
+              </div>
+            )}
+            {d.checks.longTermCare && (
+              <div>
+                <dt>{d.checks.longTermCare.applied ? "If no one needs long-term care" : "If long-term care is needed"}</dt>
+                <dd>{pct(d.checks.longTermCare.otherSuccessRate)}</dd>
               </div>
             )}
             {d.checks.withoutGuardrails && (

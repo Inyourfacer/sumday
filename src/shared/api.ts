@@ -237,6 +237,15 @@ export interface RetirementResponse {
     survivorSpendingPct: number;
     guardrails: { enabled: boolean; upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
     rothConversionRatePct: number;
+    earlyWithdrawalRules: boolean;
+    ruleOf55: boolean;
+    rothBasisPct: number;
+    spousalBenefits: boolean;
+    ssShortfall: { enabled: boolean; startYear: number; payablePct: number };
+    healthcareSharePct: number;
+    healthcareGrowthPct: number;
+    otherSpendingDriftPct: number;
+    longTermCare: { enabled: boolean; probabilityPct: number; meanYears: number; annualCost: number; growthPct: number };
   };
   inputs: {
     startYear: number;
@@ -280,6 +289,10 @@ export interface RetirementResponse {
     fixedHorizon: { age: number; successRate: number } | null;
     /** With guardrails on: the chance if spending never changed. */
     withoutGuardrails: { successRate: number } | null;
+    /** The opposite of the setting: with the shortfall off, the chance if benefits are cut; with it on, the chance at full benefits. Null without Social Security. */
+    ssShortfall: { applied: boolean; startYear: number; payablePct: number; otherSuccessRate: number } | null;
+    /** The same for long-term care. */
+    longTermCare: { applied: boolean; otherSuccessRate: number } | null;
   } | null;
   sources: { returns: string; returnsYears: string; rmd: string; tax: string; medicare: string | null };
 }
@@ -298,6 +311,16 @@ export interface ConversionsResponse {
     medianLifetimeTax: number | null;
     medianMedicareSurcharge: number | null;
     medianEndAfterTax: number;
+    /** Against no conversions, future by future (null for the no-conversion row). */
+    paired: {
+      /** Shares of futures ending at least $1,000 better or worse off after tax. */
+      better: number;
+      worse: number;
+      medianEndDifference: number;
+      medianTaxDifference: number;
+      saved: number;
+      lost: number;
+    } | null;
   }[];
 }
 
