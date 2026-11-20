@@ -287,5 +287,23 @@
   "payroll": {
     "socialSecurityWageBase": 18450000,
     "source": "SSA contribution and benefit base, 2026: $184,500 (https://www.ssa.gov/oact/cola/cbb.html). Employee rates: 6.2% Social Security, 1.45% Medicare; the additional Medicare tax is not modeled."
+  },
+  "seniors": {
+    "source": "Additional standard deduction for age 65 and over: Rev. Proc. 2025-32 section 4.14(3), read in IRB 2025-45. Extra senior deduction: IRS 'Working Families Tax Cuts: Tax deductions for working Americans and seniors' ($6,000 per person aged 65 or more by year end, tax years 2025 through 2028, married couples must file jointly, phases out above $75,000 of modified AGI or $150,000 joint). The 6% phase-out rate is from the statute (P.L. 119-21 section 70103); the IRS page read gives the thresholds only. Amounts in cents.",
+    "additionalStandardDeduction": {
+      "married": 165000,
+      "unmarried": 205000
+    },
+    "extraDeduction": {
+      "amount": 600000,
+      "phaseOutPct": 6,
+      "phaseOutStart": {
+        "single": 7500000,
+        "head_of_household": 7500000,
+        "married_joint": 15000000
+      },
+      "firstYear": 2025,
+      "lastYear": 2028
+    }
   }
 }

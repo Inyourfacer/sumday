@@ -136,6 +136,14 @@ export interface SimInput {
   ssShortfall?: { startYear: number; payablePct: number };
   /** Add Medicare income-related surcharges (IRMAA) from age 65, from the tax table's tiers. Bracket taxes only. */
   medicare?: boolean;
+  /**
+   * Withdrawal order: draw pre-tax money first, up to the top of the `ratePct` tax bracket (only money that can come out
+   * without penalty), then taxable savings, then the rest of the pre-tax money, Roth and the HSA. Without it, taxable
+   * savings come first. Bracket taxes only.
+   */
+  withdrawalFill?: { ratePct: number };
+  /** Also measure the tax rate on an extra dollar of income in retirement (bracket taxes only). */
+  trackMarginal?: boolean;
   /** Last year to show in `bands` and to measure `medianAtEnd` at (default `endYear`). */
   displayEndYear?: number;
   seed: number;
@@ -185,6 +193,11 @@ export interface SimResult {
    * out to the end of the plan (after Social Security and pensions, today's dollars). `expected` is the average over every future.
    */
   shortfall: { expected: number; failedMedian: number | null; failedP90: number | null; failedMedianYears: number | null };
+  /**
+   * With `trackMarginal`: the tax rate (federal and state, percent) on an extra $1,000 of pre-tax income, averaged over each
+   * future's retirement years; this is its median and middle half across futures. It includes the extra tax on Social Security.
+   */
+  marginal: { median: number; low: number; high: number } | null;
   /** One entry per future, when asked for with `perRun`: for comparing two plans on the same futures. */
   perRun?: PerRun;
   /** With long-term care modeled: the share of futures where someone needs paid care. */
@@ -289,6 +302,8 @@ interface PathOutcome {
   penalties: number;
   /** Spending left unfunded once the money has run out (today's dollars). */
   shortfall: number;
+  /** Average marginal tax rate over the retirement years, as a fraction; null when not tracked. */
+  marginal: number | null;
 }
 
 /** Employee-side payroll tax (Social Security up to the wage base, Medicare on everything), on a year's gross pay. */
@@ -355,6 +370,8 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
   let medicare = 0;
   let penalties = 0;
   let shortfall = 0;
+  let marginalSum = 0;
+  let marginalYears = 0;
   let lastTrad = 0;
 
   // Early-withdrawal bookkeeping (bracket mode only): which pre-tax money is penalty-free, and what the Roth holds.
@@ -398,8 +415,9 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
   const unfundedAt = (t: number, f: number): number => {
     const year = input.startYear + t;
     const inc = incomeFor(year, f);
+    const seniors = people.filter((p, k) => alive(k, year) && year - p.birthYear >= 65).length;
     const tax = input.taxes.brackets
-      ? incomeTax({ ordinary: inc.pension / f, socialSecurity: inc.ss / f, gains: 0 }, input.taxes.brackets, cumInfl).total * f
+      ? incomeTax({ ordinary: inc.pension / f, socialSecurity: inc.ss / f, gains: 0 }, { ...input.taxes.brackets, seniors, year }, cumInfl).total * f
       : ord * inc.pension;
     return Math.max(0, f * (spendAt(t) + careAt(year)) - (inc.ss + inc.pension - tax));
   };
@@ -523,7 +541,9 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     const year = input.startYear + t;
     // The year after the first death, the survivor files as a single person.
     const widowed = deaths !== null && people.some((_, k) => !alive(k, year));
-    const setup: TaxSetup = widowed && setup0.filing === "married_joint" ? { ...setup0, filing: "single" } : setup0;
+    // Each person 65 or older by year end adds to the deduction.
+    const seniors = people.filter((p, k) => alive(k, year) && year - p.birthYear >= 65).length;
+    const setup: TaxSetup = { ...(widowed && setup0.filing === "married_joint" ? { ...setup0, filing: "single" as const } : setup0), seniors, year };
     // Medicare surcharge: set by the income of two years back, per person on Medicare.
     let medicareCost = 0;
     if (irmaa) {
@@ -583,17 +603,39 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
       rothEarn = roth - rothFree - rothConv;
     }
 
+    // Pre-tax money to draw first when filling a bracket: as much as keeps taxable income within it.
+    let tradFill = 0;
+    const fillEdge = input.withdrawalFill && tradFreeTotal > 0 ? bracketTop(setup, input.withdrawalFill.ratePct) : null;
+    if (fillEdge !== null) {
+      const fits = (x: number) => ordinaryTaxableIncome({ ordinary: (baseOrd + x) / f, socialSecurity: ss / f, gains: 0 }, setup, cumInfl).taxableOrdinary <= fillEdge;
+      if (fits(tradFreeTotal)) tradFill = tradFreeTotal;
+      else if (fits(0)) {
+        let lo = 0;
+        let hi = tradFreeTotal;
+        for (let i = 0; i < 20; i++) {
+          const mid = (lo + hi) / 2;
+          if (fits(mid)) lo = mid;
+          else hi = mid;
+        }
+        tradFill = lo;
+      }
+    }
+
     /**
-     * What drawing `g` in total leaves after tax and penalty, and the split. The order is taxable money, penalty-free
+     * What drawing `g` in total leaves after tax and penalty, and the split. The order is pre-tax money up to the chosen
+     * bracket (if any), taxable money, penalty-free
      * pre-tax money, penalty-free Roth money, then (before 60) conversions inside their five years at 10%, pre-tax
      * money at tax plus 10%, Roth growth at tax plus 10%, and last the HSA.
      */
     const draw = (g: number) => {
       let rest = g;
+      const fromTradFill = Math.min(rest, tradFill);
+      rest -= fromTradFill;
       const fromTaxable = Math.min(rest, taxable);
       rest -= fromTaxable;
-      const fromTradFree = Math.min(rest, tradFreeTotal);
-      rest -= fromTradFree;
+      const fromTradRest = Math.min(rest, tradFreeTotal - tradFill);
+      rest -= fromTradRest;
+      const fromTradFree = fromTradFill + fromTradRest;
       const fromRothFree = Math.min(rest, rothFree);
       rest -= fromRothFree;
       const fromRothConv = Math.min(rest, rothConv);
@@ -663,6 +705,12 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     const record = (ordinary: number, gains: number) => {
       const r = incomeTax({ ordinary: ordinary / f, socialSecurity: ss / f, gains: gains / f }, setup, cumInfl);
       taxPaid += r.total * f;
+      if (input.trackMarginal && year >= retireYear) {
+        const step = 100_000;
+        const more = incomeTax({ ordinary: ordinary / f + step, socialSecurity: ss / f, gains: gains / f }, setup, cumInfl);
+        marginalSum += (more.total - r.total) / step;
+        marginalYears += 1;
+      }
       medicare += medicareCost;
       magiHistory[t] = ordinary / f + gains / f + r.taxableSocialSecurity;
     };
@@ -856,7 +904,7 @@ function runPath(input: SimInput, years: number[], retireYear: number, deaths: n
     lastTrad = 0;
     for (let k = 0; k < n; k++) lastTrad += trad[k]!;
   }
-  return { totals, depletedAt, taxPaid, converted, medicare, lowestSpending: lowest, endTraditional: lastTrad, penalties, shortfall };
+  return { totals, depletedAt, taxPaid, converted, medicare, lowestSpending: lowest, endTraditional: lastTrad, penalties, shortfall, marginal: marginalYears > 0 ? marginalSum / marginalYears : null };
 }
 
 function percentile(sorted: Float64Array, p: number): number {
@@ -919,6 +967,7 @@ export function simulate(input: SimInput, options: { bands?: boolean; perRun?: b
   const penaltyTotals: number[] = [];
   let careRuns = 0;
   const shortfalls: number[] = [];
+  const marginals: number[] = [];
   const perRun: PerRun | undefined = options.perRun
     ? { success: new Uint8Array(input.runs), endAfterTax: new Float64Array(input.runs), lifetimeTax: new Float64Array(input.runs), shortfall: new Float64Array(input.runs) }
     : undefined;
@@ -929,7 +978,8 @@ export function simulate(input: SimInput, options: { bands?: boolean; perRun?: b
     if (deaths) lastDeaths.push(Math.max(...deaths));
     const care = input.longTermCare ? drawCare(input, r, deaths) : null;
     if (care?.some((w) => w !== null)) careRuns += 1;
-    const { totals, depletedAt, taxPaid, converted, medicare, lowestSpending, endTraditional, penalties, shortfall } = runPath(input, years, retireYear, deaths, care);
+    const { totals, depletedAt, taxPaid, converted, medicare, lowestSpending, endTraditional, penalties, shortfall, marginal } = runPath(input, years, retireYear, deaths, care);
+    if (marginal !== null) marginals.push(marginal);
     taxes.push(taxPaid);
     penaltyTotals.push(penalties);
     conversions.push(converted);
@@ -995,6 +1045,13 @@ export function simulate(input: SimInput, options: { bands?: boolean; perRun?: b
         failedMedianYears: failedMedian !== null && first > 0 ? Math.round((failedMedian / first) * 10) / 10 : null,
       };
     })(),
+    marginal: marginals.length
+      ? (() => {
+          const sorted = Float64Array.from(marginals).sort();
+          const at = (q: number) => Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]! * 1000) / 10;
+          return { median: at(0.5), low: at(0.25), high: at(0.75) };
+        })()
+      : null,
     ...(perRun ? { perRun } : {}),
     longTermCare: input.longTermCare ? { share: careRuns / input.runs } : null,
     penalties: input.penalties && input.taxes.brackets ? { median: Math.round(medianOf(penaltyTotals)), share: penaltyTotals.filter((x) => x > 0.5).length / input.runs } : null,

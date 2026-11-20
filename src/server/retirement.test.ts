@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextMonth } from "../engine/budget/budget.ts";
-import type { AccountView, AssumptionsResponse, BudgetResponse, CategoryView, ClaimingResponse, ConversionsResponse, ExploreResponse, RetirementResponse } from "../shared/api.ts";
+import { leanFor } from "../engine/plan/rothChoice.ts";
+import type { AccountView, AssumptionsResponse, BudgetResponse, CategoryView, ClaimingResponse, ConversionsResponse, ExploreResponse, PlanResponse, RetirementResponse, WithdrawalOrderResponse } from "../shared/api.ts";
 import { buildApp } from "./app.ts";
 import { openDb, type Db } from "./db.ts";
 
@@ -331,6 +332,48 @@ BND,VANGUARD TOTAL BOND MARKET ETF,800,$78.75,"$63,000.00","$60,000.00"
     // Drift starts at retirement, so the first retirement year is unchanged.
     expect(drifting.inputs!.spending.firstYear).toBe(3_960_000);
     expect(drifting.result!.successRate).toBeGreaterThanOrEqual(flatSpending.result!.successRate);
+  });
+
+  it("feeds the retirement tax rate into the Roth-or-pre-tax advice in Next best moves", async () => {
+    await household();
+    const plan = await ok<PlanResponse>("GET", "/api/plan");
+    // Alex earns $120,000 and puts 6% pre-tax: $80,600 is taxable after the deduction, in the 12% bracket.
+    expect(plan.taxView).toMatchObject({ nowPct: 12, nowBasis: "income" });
+    const later = plan.taxView.retirementPct;
+    expect(later).not.toBeNull();
+    const [low, high] = plan.taxView.retirementRange!;
+    expect(low).toBeLessThanOrEqual(later!);
+    expect(high).toBeGreaterThanOrEqual(later!);
+    expect(plan.taxView.lean).toBe(leanFor(12, later));
+    const ira = plan.result.recommendations.find((r) => r.step === "ira")!;
+    expect(ira.facts.map((f) => f.label)).toEqual(expect.arrayContaining(["Tax rate on your next dollar now", "Expected rate on an extra pre-tax dollar in retirement"]));
+    expect(ira.why).toMatch(/tax rate now/);
+
+    // A rate typed in settings replaces the estimate for today's rate only.
+    const typed = await ok<PlanResponse>("PUT", "/api/plan/settings", { marginalTaxPct: 30 });
+    expect(typed.taxView).toMatchObject({ nowPct: 30, nowBasis: "you", retirementPct: later });
+    expect(typed.taxView.lean).toBe("traditional");
+    expect(typed.result.recommendations.find((r) => r.step === "ira")!.why).toMatch(/\(30%\) is higher than expected in retirement/);
+  });
+
+  it("compares which money to spend first on the same futures, and takes the choice into the plan", async () => {
+    expect((await ok<WithdrawalOrderResponse>("GET", "/api/retirement/withdrawal-order")).ready).toBe(false);
+    await household();
+    const o = await ok<WithdrawalOrderResponse>("GET", "/api/retirement/withdrawal-order");
+    expect(o.ready).toBe(true);
+    expect(o.options!.map((x) => x.ratePct)).toEqual([0, 12, 22, 24]);
+    expect(o.options![0]!.paired).toBeNull();
+    for (const x of o.options!.slice(1)) {
+      expect(x.paired!.better + x.paired!.worse).toBeLessThanOrEqual(1);
+      expect(x.paired!.saved).toBeGreaterThanOrEqual(0);
+    }
+    expect(o.chosen).toBe(0);
+    const r = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { withdrawalFillRatePct: 12 });
+    expect(r.settings.withdrawalFillRatePct).toBe(12);
+    expect((await ok<WithdrawalOrderResponse>("GET", "/api/retirement/withdrawal-order")).chosen).toBe(12);
+    expect((await call("PUT", "/api/retirement/settings", { withdrawalFillRatePct: 15 })).status).toBe(400);
+    await ok("PUT", "/api/retirement/settings", { taxMode: "flat" });
+    expect((await ok<WithdrawalOrderResponse>("GET", "/api/retirement/withdrawal-order")).ready).toBe(false);
   });
 
   it("validates settings", async () => {

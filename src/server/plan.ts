@@ -24,6 +24,7 @@ import { getSetting, setSetting, type Db } from "./db.ts";
 import { getHousehold, getPeople } from "./household.ts";
 import { badRequest, idParam, notFound, parse } from "./http.ts";
 import { applyMoveStates, registerMoveRoutes } from "./moves.ts";
+import { estimateTaxView } from "./taxView.ts";
 
 // ---------- Contribution limits ----------
 
@@ -422,7 +423,9 @@ export function buildPlan(db: Db, options: { steps?: PlanSettings["steps"] } = {
   }
 
   const customGoals = ctx.goals.filter((g) => g.kind === "custom");
+  const taxView = estimateTaxView(db, settings.marginalTaxPct);
   const result = runWaterfall({
+    taxView,
     today: now,
     limits: limitsChoice.limits,
     limitsExact: limitsChoice.exact,
@@ -484,6 +487,7 @@ export function buildPlan(db: Db, options: { steps?: PlanSettings["steps"] } = {
       emergencyMonths: ctx.emergencyMonths,
     },
     limits: { year: limitsChoice.limits.year, requestedYear: year, exact: limitsChoice.exact, source: limitsChoice.limits.source },
+    taxView,
     settings,
     alerts: [...alerts(ctx, debts), ...portfolioAlerts(db)],
     warnings,

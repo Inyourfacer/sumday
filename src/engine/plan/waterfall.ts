@@ -8,6 +8,7 @@ import { monthsBetween, parseIsoDate, type IsoDate } from "../dates.ts";
 import { multiplyCents, type Cents } from "../money.ts";
 import { effectiveApr, payoffPlan, type Debt } from "./debt.ts";
 import { hsaLimit, iraLimit, workplaceLimit, type ContributionLimits, type FilingStatus } from "./limits.ts";
+import { iraDeductibility, leanFor, type TaxView } from "./rothChoice.ts";
 
 export const STEP_IDS = [
   "starter_emergency",
@@ -151,6 +152,8 @@ export interface WaterfallInput {
   /** In priority order. The emergency fund is not one of these. */
   goals: readonly PlanGoal[];
   hasTaxableAccount: boolean;
+  /** Tax rate now against expected in retirement, for choosing between Roth and pre-tax money. Without it, Roth is suggested for IRAs. */
+  taxView?: TaxView;
 }
 
 export type StepStatus = "act" | "partial" | "done" | "waiting" | "not_applicable" | "disabled";
@@ -242,6 +245,34 @@ export function pacingMonths(monthsLeftInYear: number): number {
 export function takeHomeFactor(p: Pick<PlanPerson, "plan">, marginalTaxPct: number): number {
   if (p.plan.rothPct > 0 && p.plan.pretaxPct === 0) return 1;
   return 1 - Math.min(60, Math.max(0, marginalTaxPct)) / 100;
+}
+
+const BACKDOOR_NOTE = "Income is above the Roth limit, so contribute to a traditional IRA and convert it (a backdoor Roth). Check the pro-rata rule if you have other pre-tax IRA money.";
+const rate = (v: number) => `${Math.round(v * 10) / 10}%`;
+
+/** The rate on your next dollar now and in retirement, as facts and a one-line reason for a Roth or pre-tax choice. */
+function taxFacts(view: TaxView | undefined): Fact[] {
+  if (!view || view.nowPct === null) return [];
+  const facts = [text("Tax rate on your next dollar now", `${rate(view.nowPct)}${view.nowBasis === "you" ? " (the rate you entered)" : " (estimated from your income)"}`)];
+  if (view.retirementPct !== null && view.retirementRange) {
+    facts.push(
+      text("Expected rate on an extra pre-tax dollar in retirement", `${rate(view.retirementPct)} (middle half of futures: ${rate(view.retirementRange[0])} to ${rate(view.retirementRange[1])})`),
+    );
+  }
+  return facts;
+}
+
+/** Why the extra workplace-plan money should be pre-tax or Roth, from how the two tax rates compare. */
+function workplaceReason(view: TaxView | undefined): string {
+  const base = "Contributions at work come straight out of pay, so they actually happen.";
+  const lean = view ? leanFor(view.nowPct, view.retirementPct) : null;
+  if (!view || lean === null || view.nowPct === null || view.retirementPct === null) {
+    return `Pre-tax or Roth contributions at work lower taxes now or later. ${base}`;
+  }
+  const both = `your tax rate now (${rate(view.nowPct)}) and the rate expected in retirement (${rate(view.retirementPct)})`;
+  if (lean === "traditional") return `Put the increase in pre-tax (traditional) money: ${both} favor deducting now. ${base}`;
+  if (lean === "roth") return `If your plan has a Roth option, put the increase there: ${both} favor paying tax now. Roth dollars come out of take-home pay in full, so the take-home cost shown is lower than it will be. ${base}`;
+  return `Either works: ${both} are close. Splitting between pre-tax and Roth gives you more control over taxable income in retirement. ${base}`;
 }
 
 /** A move's identity: its step plus the person, debt or goal it is about. */
@@ -363,7 +394,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             push(order, s.id, { subject, status: "not_applicable", action: "", amount: 0, why: `Add ${p.name}'s income to work out the match.`, facts: [] });
             continue;
           }
-          const factor = takeHomeFactor(p, params.marginalTaxPct ?? 0);
+          const factor = takeHomeFactor(p, params.marginalTaxPct ?? input.taxView?.nowPct ?? 0);
           // Contribution needed (gross, into the plan) and what it costs in take-home pay.
           const grossCost = multiplyCents(income, Math.max(0, full - current) / 1200);
           const t = take(Math.round(grossCost * factor));
@@ -502,7 +533,29 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
           const t = take(Math.ceil(room / pacingMonths(monthsLeft)));
           const magi = input.filingStatus === "married_joint" ? household : (p.income ?? 0);
           const [lo, hi] = limits.rothIraPhaseOut[input.filingStatus];
-          const kind = magi < lo ? "Roth IRA" : magi < hi ? "Roth IRA (partly: your income is in the phase-out range)" : "backdoor Roth IRA";
+          const lean = input.taxView ? leanFor(input.taxView.nowPct, input.taxView.retirementPct) : null;
+          const spouseCovered = input.people.some((q) => q.id !== p.id && q.plan.type !== "none");
+          const deduction = iraDeductibility(limits, input.filingStatus, magi, p.plan.type !== "none", spouseCovered);
+          // A deduction only helps if the rate now is clearly higher than later, and the contribution is fully deductible.
+          const traditional = lean === "traditional" && deduction === "full";
+          const kind = traditional
+            ? "traditional IRA (deductible)"
+            : magi < lo
+              ? "Roth IRA"
+              : magi < hi
+                ? "Roth IRA (partly: your income is in the phase-out range)"
+                : "backdoor Roth IRA";
+          const nowText = input.taxView?.nowPct != null ? rate(input.taxView.nowPct) : "";
+          const laterText = input.taxView?.retirementPct != null ? rate(input.taxView.retirementPct) : "";
+          const reason = traditional
+            ? `Your tax rate now (${nowText}) is higher than expected in retirement (${laterText}) and this contribution is deductible, so the deduction now is worth more than tax-free withdrawals later.`
+            : lean === "traditional" && deduction !== "full"
+              ? `Your tax rate now (${nowText}) is higher than expected in retirement (${laterText}), but a traditional IRA ${deduction === "none" ? "would not be deductible" : "would be only partly deductible"} at your income, so Roth is the better choice.`
+              : lean === "roth"
+                ? `Your tax rate now (${nowText}) is lower than expected in retirement (${laterText}), so paying tax now and withdrawing tax-free later wins.`
+                : lean === "either"
+                  ? `Your tax rate now (${nowText}) and in retirement (${laterText}) are close, so either works. Roth is more flexible, since withdrawals do not raise your taxable income.`
+                  : "Retirement money that grows tax-free. Roth suits most people below the income limit.";
           push(order, s.id, {
             subject: { kind: "person", id: p.id, name: p.name },
             title: `IRA: ${p.name}`,
@@ -518,8 +571,10 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
               t.status === "done"
                 ? `${p.name} has contributed the full ${usd(limit)} for ${limits.year}.`
                 : magi >= hi
-                  ? "Income is above the Roth limit, so contribute to a traditional IRA and convert it (a backdoor Roth). Check the pro-rata rule if you have other pre-tax IRA money."
-                  : "Retirement money that grows tax-free. Roth suits most people below the income limit.",
+                  ? traditional
+                  ? reason
+                  : `${lean ? `${reason} ` : ""}${BACKDOOR_NOTE}`
+                : reason,
             facts: [
               money(`${limits.year} limit`, limit),
               money("Contributed this year", p.iraYtd),
@@ -527,6 +582,8 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
               months("Months to spread it over (to the April deadline)", pacingMonths(monthsLeft)),
               money("Income used for the Roth check", magi),
               text("Roth phase-out", `${usd(lo)}–${usd(hi)}`),
+              ...taxFacts(input.taxView),
+              ...(input.taxView ? [text("Traditional IRA deduction", deduction === "full" ? "Full" : deduction === "partial" ? "Partial" : "None at your income")] : []),
             ],
           });
         }
@@ -550,7 +607,7 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
           const current = contribPct.get(p.id)!;
           const projected = multiplyCents(income, current / 100);
           const room = Math.max(0, limit - projected);
-          const factor = takeHomeFactor(p, params.marginalTaxPct ?? 0);
+          const factor = takeHomeFactor(p, params.marginalTaxPct ?? input.taxView?.nowPct ?? 0);
           const t = take(Math.ceil((room / 12) * factor));
           const grossPut = Math.round(t.amount / factor);
           const newPct = Math.min((limit / income) * 100, current + halfPctDown((grossPut * 1200) / income));
@@ -570,12 +627,13 @@ export function runWaterfall(input: WaterfallInput): WaterfallResult {
             why:
               t.status === "done"
                 ? `${p.name}'s contributions reach the ${usd(limit)} limit.`
-                : "Pre-tax or Roth contributions at work lower taxes now or later, and come straight out of pay so they actually happen.",
+                : workplaceReason(input.taxView),
             facts: [
               money(`${limits.year} limit`, limit),
               percent("Contributing", current),
               money("Projected for a full year", projected),
               money("Room left", room),
+              ...taxFacts(input.taxView),
             ],
           });
         }

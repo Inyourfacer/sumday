@@ -67,6 +67,8 @@ export interface PlanResponse {
     emergencyMonths: number;
   };
   limits: { year: number; requestedYear: number; exact: boolean; source: string };
+  /** Tax rate on the next dollar now against expected in retirement, behind the Roth-or-pre-tax advice. */
+  taxView: import("../engine/plan/rothChoice.ts").TaxView;
   settings: PlanSettings;
   alerts: PlanAlert[];
   warnings: string[];
@@ -237,6 +239,7 @@ export interface RetirementResponse {
     survivorSpendingPct: number;
     guardrails: { enabled: boolean; upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
     rothConversionRatePct: number;
+    withdrawalFillRatePct: number;
     earlyWithdrawalRules: boolean;
     ruleOf55: boolean;
     rothBasisPct: number;
@@ -295,6 +298,21 @@ export interface RetirementResponse {
     longTermCare: { applied: boolean; otherSuccessRate: number } | null;
   } | null;
   sources: { returns: string; returnsYears: string; rmd: string; tax: string; medicare: string | null };
+}
+
+/** Withdrawal order options compared on the same futures, each against taxable-savings-first. */
+export interface WithdrawalOrderResponse {
+  ready: boolean;
+  reason?: string;
+  chosen?: number;
+  options?: {
+    ratePct: number;
+    successRate: number;
+    medianLifetimeTax: number | null;
+    medianMedicareSurcharge: number | null;
+    medianEndAfterTax: number;
+    paired: { better: number; worse: number; medianEndDifference: number; medianTaxDifference: number; saved: number; lost: number } | null;
+  }[];
 }
 
 export interface ConversionsResponse {

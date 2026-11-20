@@ -14,6 +14,7 @@ import { getTarget, loadHoldings, toPositions } from "./holdings.ts";
 import { getHousehold, getPeople } from "./household.ts";
 import { getPlanSettings, spendingBaseline } from "./plan.ts";
 import { buildInput, getSettings } from "./retirement.ts";
+import { estimateTaxView } from "./taxView.ts";
 
 // The sensitivity runs take a few seconds; the same inputs give the same answer, so remember it.
 const sensitivityCache = new Map<string, AssumptionsResponse["sensitivity"]>();
@@ -66,12 +67,25 @@ export function assumptions(db: Db): AssumptionsResponse {
     note: "Does not adjust for job stability, dependents or insurance.",
     link: "/plan",
   });
+  const taxView = estimateTaxView(db, plan.marginalTaxPct);
   add({
     area: "Plan",
-    label: "Marginal tax rate",
-    value: plan.marginalTaxPct === null ? "Not set: pre-tax 401(k) dollars are treated as take-home dollars" : `${plan.marginalTaxPct}%`,
-    source: plan.marginalTaxPct === null ? "default" : "you",
+    label: "Tax rate on your next dollar now",
+    value: taxView.nowPct === null ? "Not known until incomes are entered" : `${taxView.nowPct}%${taxView.nowBasis === "you" ? "" : " (federal bracket from your income, plus the state rate you set)"}`,
+    source: plan.marginalTaxPct !== null ? "you" : taxView.nowPct === null ? "missing" : "estimated",
+    note: "Sets the take-home cost of pre-tax 401(k) money and half of the Roth or pre-tax advice. Uses the standard deduction and ignores credits.",
     link: "/plan",
+  });
+  add({
+    area: "Plan",
+    label: "Expected tax rate on an extra pre-tax dollar in retirement",
+    value:
+      taxView.retirementPct === null
+        ? "Not available (needs household setup and bracket taxes)"
+        : `${taxView.retirementPct}% (middle half of futures ${taxView.retirementRange![0]}% to ${taxView.retirementRange![1]}%)`,
+    source: taxView.retirementPct === null ? "missing" : "estimated",
+    note: "From the retirement simulation without the savings Next best moves recommends. A gap of 3 points or more decides Roth versus pre-tax; closer is a toss-up.",
+    link: "/retirement",
   });
 
   // Debt
@@ -121,7 +135,7 @@ export function assumptions(db: Db): AssumptionsResponse {
       label: "Taxes in retirement",
       value: `Federal brackets for ${household.filingStatus.replace("_", " ")}, state ${retirement.stateTaxPct}%`,
       source: set(storedRet, "taxMode"),
-      note: "Tax tables are for 2026 and treated as indexed to inflation. Medicare surcharges (IRMAA) are added from 65, set by income two years back; the tier amounts are not yet checked against cms.gov. No extra deduction at 65+, no tax on dividends while saving. State tax is one flat rate you set.",
+      note: "Tax tables are for 2026 and treated as indexed to inflation. People 65 and over get the extra standard deduction and, through 2028, the $6,000 senior deduction (phased out above $75,000, or $150,000 joint). Medicare surcharges (IRMAA) are added from 65, set by income two years back. No tax on dividends while saving. State tax is one flat rate you set.",
       link: "/retirement",
     });
   } else {
@@ -200,6 +214,14 @@ export function assumptions(db: Db): AssumptionsResponse {
       : "Not included",
     source: set(storedRet, "longTermCare"),
     note: "The chance, length and cost are rough defaults to adjust, not figures checked against current price surveys. Retirement shows the chance with and without it.",
+    link: "/retirement",
+  });
+  add({
+    area: "Retirement",
+    label: "Which money is spent first",
+    value: retirement.withdrawalFillRatePct > 0 ? `Pre-tax money up to the top of the ${retirement.withdrawalFillRatePct}% bracket, then taxable savings, the rest of the pre-tax money, Roth and HSA` : "Taxable savings, then pre-tax, Roth and HSA",
+    source: set(storedRet, "withdrawalFillRatePct"),
+    note: "Retirement compares the orders on the same futures. Drawing pre-tax money into low brackets early usually lowers lifetime tax; the model does not choose it for you.",
     link: "/retirement",
   });
   add({

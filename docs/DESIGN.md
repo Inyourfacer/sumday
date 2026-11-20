@@ -226,7 +226,7 @@ remainder spills to the next step.
 | 3 | High-interest debt | Pay off debts with APR ≥ 7% (threshold editable) | Avalanche order |
 | 4 | Full emergency fund | Emergency fund goal target | See Section 6 |
 | 5 | HSA | Annual limit (self or family) | Only if HSA-eligible |
-| 6 | IRA | Annual limit per person | Roth or Traditional, by an income threshold you set; flags when backdoor Roth may apply |
+| 6 | IRA | Annual limit per person | Roth or deductible traditional, by comparing tax rates now and in retirement (below); backdoor Roth above the income limit |
 | 7 | Max workplace plan | Annual 401k/403b limit per person | Includes catch-up if age ≥ 50 |
 | 8 | Goals | Each goal's required monthly amount | In goal priority order |
 | 9 | Taxable investing | No cap | Into the brokerage at the target allocation |
@@ -249,6 +249,25 @@ Notes:
 - Contribution limits come from `data/limits/<year>.json`. When the current
   year's limits aren't published yet, the latest year is used and the plan
   says so.
+
+**Roth or pre-tax.** The IRA step and the workplace-plan step compare two rates:
+the tax rate on your next dollar now (the rate you entered, or the federal
+bracket your income reaches after the standard deduction and pre-tax
+contributions, plus the state rate from Retirement settings), and the expected
+rate on an extra pre-tax dollar in retirement, which is the median across
+simulated futures of each future's average marginal rate over its retirement years
+(federal and state, including the extra tax on Social Security). That second
+number comes from the same simulation as the Retirement page, run without the
+savings this plan recommends, so the two never depend on each other. A gap of 3
+points or more decides: higher now suggests a deductible traditional IRA (only
+if it is fully deductible at your income, from the IRS ranges in
+`data/limits/<year>.json`) and pre-tax workplace money; lower now suggests Roth;
+closer is a toss-up that favors a mix. Without a retirement estimate the IRA
+step falls back to Roth, as before. The rate now also sets the take-home cost of
+pre-tax payroll steps when you have not entered a rate yourself. Limits: the rule
+compares one marginal rate with one average of marginal rates, and does not
+model that more pre-tax saving raises the retirement rate, state differences
+after a move, or the order in which accounts are drawn.
 
 ### 8.3 What a recommendation looks like
 
@@ -411,10 +430,27 @@ while Sumday is open; each alert notifies once.
 
 ### 11.3 What it does *not* do (yet)
 
-Tax-optimized withdrawal order beyond the fixed one, tax drag on dividends
-while saving, the extra deduction at 65+, health-insurance subsidy cliffs,
+A withdrawal order that is optimized for you (the page compares a few fixed
+ones), tax drag on dividends while saving, health-insurance subsidy cliffs,
 Part D surcharges, penalty exceptions such as 72(t) payments, or state rules
 beyond one flat rate.
+
+**Deductions at 65 and over.** Each person 65 or older by year end gets the
+extra standard deduction ($1,650 married, $2,050 unmarried, 2026) and, for tax
+years 2025 through 2028, the $6,000 senior deduction, reduced by 6% of income
+(modified AGI) over $75,000 ($150,000 joint) and not available to separate
+filers. The senior deduction is fixed in nominal dollars, so it and its
+thresholds shrink in today's dollars. The phase-out adds an extra 6% to the
+rate on income inside it, which the Roth-or-pre-tax rates include. The 6% rate is
+from the statute; the IRS page read gives the thresholds only.
+
+**Withdrawal order.** By default taxable savings are spent first, then pre-tax,
+Roth and HSA. The Retirement page compares that with spending pre-tax money
+first, up to the top of the 12%, 22% or 24% bracket (counting Social Security,
+pensions, required minimums and pay already using it), then taxable savings.
+Only pre-tax money that can come out without penalty is drawn this way. Each
+option is compared with the default future by future. It can be applied to the
+plan, and works alongside Roth conversions, which then use whatever room is left.
 
 **Early withdrawals** (bracket tax mode). Before 60 (used for 59½, so the
 penalty can run up to a year long), pre-tax money drawn costs 10% on top of
