@@ -2,10 +2,10 @@ import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { parseIsoDate } from "../engine/dates.ts";
 import { allocation as portfolioAllocation, fees } from "../engine/invest/portfolio.ts";
-import { historicalReplay, simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
+import { compareRuns, historicalReplay, simulate, whatIfs, type HistoricalYear, type SimInput, type SimResult, type WhatIfs } from "../engine/retire/montecarlo.ts";
 import { DEFAULT_MORTALITY } from "../engine/retire/longevity.ts";
 import type { TaxTable } from "../engine/retire/tax.ts";
-import { benefitAtClaim, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
+import { benefitAtClaim, fullRetirementAge, rmdStartAge, type RmdTable } from "../engine/retire/rules.ts";
 import { spendingAtAge, type SpendingPlan } from "../engine/retire/spending.ts";
 import { applyOverrides, describeOverride, type Override } from "../engine/retire/overrides.ts";
 import type { ClaimingResponse, ConversionsResponse, RetirementResponse } from "../shared/api.ts";
@@ -49,6 +49,17 @@ interface StoredSettings {
   guardrails: { enabled: boolean; upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
   /** Fill this tax bracket with Roth conversions before required minimums begin; 0 = no conversions. */
   rothConversionRatePct: number;
+  /** The 10% penalty on early withdrawals before 60, whether the rule of 55 exempts workplace plans, and the share of today's Roth balance that is contributions. */
+  earlyWithdrawalRules: boolean;
+  ruleOf55: boolean;
+  rothBasisPct: number;
+  spousalBenefits: boolean;
+  ssShortfall: { enabled: boolean; startYear: number; payablePct: number };
+  /** Share of retirement spending that is healthcare, its growth above inflation a year, and the yearly real change in all other spending once retired. */
+  healthcareSharePct: number;
+  healthcareGrowthPct: number;
+  otherSpendingDriftPct: number;
+  longTermCare: { enabled: boolean; probabilityPct: number; meanYears: number; annualCost: number; growthPct: number };
   spending: { categoryOverrides: Record<string, number | null>; items: SpendingPlan["items"]; oneOffs: SpendingPlan["oneOffs"] };
   /** Changes promoted from scenarios (extra savings, spending changes, one-time amounts, a home). */
   events: Override[];
@@ -71,13 +82,30 @@ const DEFAULTS: StoredSettings = {
   survivorSpendingPct: DEFAULT_MORTALITY.survivorSpendingPct,
   guardrails: { enabled: false, upperPct: 20, lowerPct: 20, adjustPct: 10, floorPct: 75 },
   rothConversionRatePct: 0,
+  earlyWithdrawalRules: true,
+  ruleOf55: true,
+  rothBasisPct: 100,
+  spousalBenefits: true,
+  // 2026 Trustees Report: the retirement trust fund (OASI) runs out in late 2032 and the rest pays about 78% of scheduled benefits.
+  ssShortfall: { enabled: false, startYear: 2033, payablePct: 78 },
+  healthcareSharePct: 15,
+  healthcareGrowthPct: 1,
+  otherSpendingDriftPct: 0,
+  longTermCare: { enabled: false, probabilityPct: 50, meanYears: 3, annualCost: 9_000_000, growthPct: 1 },
   spending: { categoryOverrides: {}, items: [], oneOffs: [] },
   events: [],
 };
 
 export function getSettings(db: Db): StoredSettings {
   const stored = getSetting<Partial<StoredSettings>>(db, "retirement") ?? {};
-  return { ...DEFAULTS, ...stored, guardrails: { ...DEFAULTS.guardrails, ...stored.guardrails }, spending: { ...DEFAULTS.spending, ...stored.spending } };
+  return {
+    ...DEFAULTS,
+    ...stored,
+    guardrails: { ...DEFAULTS.guardrails, ...stored.guardrails },
+    ssShortfall: { ...DEFAULTS.ssShortfall, ...stored.ssShortfall },
+    longTermCare: { ...DEFAULTS.longTermCare, ...stored.longTermCare },
+    spending: { ...DEFAULTS.spending, ...stored.spending },
+  };
 }
 
 /** Share of the calendar year still to come, counting today (Jan 1 = 1, Dec 31 = 1/365). */
@@ -166,6 +194,8 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
       hsaPayroll: p.employerPlan.hsaPayrollAnnual,
       socialSecurity: benefitAtClaim(p.socialSecurity, p.ssClaimAge, birthYear),
       claimAge: p.ssClaimAge,
+      pia: benefitAtClaim(p.socialSecurity, fullRetirementAge(birthYear), birthYear),
+      fra: fullRetirementAge(birthYear),
       pension: p.pension,
       rmdStartAge: rmdStartAge(RMD, birthYear),
     };
@@ -174,6 +204,8 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
 
   // Starting money by tax treatment. Cash accounts (the emergency fund) are left out.
   const balances = { taxable: 0, taxableBasis: 0, roth: 0, hsa: 0, traditional: {} as Record<number, number> };
+  /** Pre-tax money in workplace plans, per owner: open before 60 under the rule of 55. */
+  const workplace: Record<number, number> = {};
   const holdings = loadHoldings(db);
   for (const a of accounts) {
     const value = Math.max(0, a.balance);
@@ -190,6 +222,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     else {
       const owner = a.ownerPersonId ?? primary.id;
       balances.traditional[owner] = (balances.traditional[owner] ?? 0) + value;
+      if (a.type === "401k" || a.type === "403b" || a.type === "457") workplace[owner] = (workplace[owner] ?? 0) + value;
     }
   }
 
@@ -229,11 +262,22 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     items: settings.spending.items,
     oneOffs: settings.spending.oneOffs,
   };
+  const retireYearEarly = (() => {
+    const w = simPeople.filter((p) => p.income > 0);
+    return w.length ? Math.max(startYear, ...w.map((p) => p.birthYear + p.retirementAge)) : startYear;
+  })();
+  /** Healthcare costs growing faster than inflation, and the rest of spending drifting up or down once retired, in today's dollars. */
+  const shapeSpending = (amounts: number[]): number[] => {
+    const share = settings.healthcareSharePct / 100;
+    const growth = 1 + settings.healthcareGrowthPct / 100;
+    const drift = 1 + settings.otherSpendingDriftPct / 100;
+    return amounts.map((amount, t) => Math.round(amount * (share * growth ** t + (1 - share) * drift ** Math.max(0, startYear + t - retireYearEarly))));
+  };
   const horizonEnd = Math.max(...simPeople.map((p) => p.birthYear + household.planningHorizonAge));
   const modeled = settings.longevity === "modeled";
   // With lifespans drawn, the run goes as far as anyone could live; the chart and "at the end" stay at the planning age.
   const endYear = modeled ? Math.max(horizonEnd, Math.max(...simPeople.map((p) => p.birthYear)) + DEFAULT_MORTALITY.maxAge) : horizonEnd;
-  const spending = Array.from({ length: endYear - startYear + 1 }, (_, t) => spendingAtAge(plan, startYear + t - primary.birthYear));
+  const spending = shapeSpending(Array.from({ length: endYear - startYear + 1 }, (_, t) => spendingAtAge(plan, startYear + t - primary.birthYear)));
   // Regular yearly spending when retirement starts, without one-off costs.
   const ongoingAtRetirement = (retireYear: number) => spendingAtAge({ ...plan, oneOffs: [] }, retireYear - primary.birthYear);
 
@@ -267,10 +311,16 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
     raw.guardrails = { upperPct, lowerPct, adjustPct, floorPct };
   }
   if (brackets) raw.medicare = true;
-  const retireYearPlanned = (() => {
-    const w = simPeople.filter((p) => p.income > 0);
-    return w.length ? Math.max(startYear, ...w.map((p) => p.birthYear + p.retirementAge)) : startYear;
-  })();
+  if (settings.earlyWithdrawalRules && brackets) {
+    raw.penalties = { rothBasisShare: settings.rothBasisPct / 100, ruleOf55: settings.ruleOf55, freeTraditional: workplace };
+  }
+  if (settings.spousalBenefits && simPeople.length === 2 && household.filingStatus !== "single" && household.filingStatus !== "head_of_household") raw.spousalBenefits = true;
+  if (settings.ssShortfall.enabled) raw.ssShortfall = { startYear: settings.ssShortfall.startYear, payablePct: settings.ssShortfall.payablePct };
+  if (settings.longTermCare.enabled) {
+    const c = settings.longTermCare;
+    raw.longTermCare = { probability: c.probabilityPct / 100, meanYears: c.meanYears, annualCost: c.annualCost, extraGrowthPct: c.growthPct };
+  }
+  const retireYearPlanned = retireYearEarly;
   // Conversions run from retirement until required minimums begin for the oldest person.
   const oldest = simPeople.reduce((a, b) => (b.birthYear < a.birthYear ? b : a));
   const window = { from: retireYearPlanned, to: oldest.birthYear + oldest.rmdStartAge - 1 };
@@ -278,7 +328,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
   if (conversionWindow) raw.conversion = { targetRatePct: settings.rothConversionRatePct, startYear: conversionWindow.from, endYear: conversionWindow.to };
   // Events promoted from scenarios apply on top of the plan.
   const input = applyOverrides(raw, settings.events);
-  const ongoingInput = applyOverrides({ ...raw, spending: raw.spending.map((_, t) => ongoingAtRetirement(startYear + t)) }, settings.events);
+  const ongoingInput = applyOverrides({ ...raw, spending: shapeSpending(raw.spending.map((_, t) => ongoingAtRetirement(startYear + t))) }, settings.events);
   const workers = simPeople.filter((p) => p.income > 0);
   const retireYear = workers.length ? Math.max(startYear, ...workers.map((p) => p.birthYear + p.retirementAge)) : startYear;
   const traditional = Object.values(balances.traditional).reduce((s, v) => s + v, 0);
@@ -316,7 +366,7 @@ export function buildInput(db: Db, settings: StoredSettings): { built: Built | n
 }
 
 /** Runs behind each what-if answer; fewer than the headline for speed, so they are labelled approximate. */
-const WHAT_IF_RUNS = 3000;
+const WHAT_IF_RUNS = 2000;
 
 // Results are cached by their exact inputs: the same question gets the same (seeded) answer.
 interface Cached {
@@ -361,6 +411,15 @@ export function retirement(db: Db): RetirementResponse {
     survivorSpendingPct: settings.survivorSpendingPct,
     guardrails: settings.guardrails,
     rothConversionRatePct: settings.rothConversionRatePct,
+    earlyWithdrawalRules: settings.earlyWithdrawalRules,
+    ruleOf55: settings.ruleOf55,
+    rothBasisPct: settings.rothBasisPct,
+    spousalBenefits: settings.spousalBenefits,
+    ssShortfall: settings.ssShortfall,
+    healthcareSharePct: settings.healthcareSharePct,
+    healthcareGrowthPct: settings.healthcareGrowthPct,
+    otherSpendingDriftPct: settings.otherSpendingDriftPct,
+    longTermCare: settings.longTermCare,
   };
   const who = new Map(getPeople(db).map((p) => [p.id, p.name]));
   const events = settings.events.map((o) => describeOverride(o, who));
@@ -376,6 +435,21 @@ export function retirement(db: Db): RetirementResponse {
     const fixedHorizon = built.input.mortality ? simulate({ ...built.fixed, runs: WHAT_IF_RUNS }, { bands: false }).successRate : null;
     const { guardrails: _g, ...noRails } = built.input;
     const withoutGuardrails = built.input.guardrails ? simulate({ ...noRails, runs: WHAT_IF_RUNS }, { bands: false }).successRate : null;
+    // The other side of each optional risk: shown next to the headline so its size is visible either way.
+    const anySs = built.input.people.some((p) => p.socialSecurity !== null);
+    let ssShortfall: NonNullable<RetirementResponse["checks"]>["ssShortfall"] = null;
+    if (anySs) {
+      const applied = built.input.ssShortfall !== undefined;
+      const rest = { ...built.input, runs: WHAT_IF_RUNS };
+      if (applied) delete rest.ssShortfall;
+      else rest.ssShortfall = { startYear: settings.ssShortfall.startYear, payablePct: settings.ssShortfall.payablePct };
+      ssShortfall = { applied, startYear: settings.ssShortfall.startYear, payablePct: settings.ssShortfall.payablePct, otherSuccessRate: simulate(rest, { bands: false }).successRate };
+    }
+    const careApplied = built.input.longTermCare !== undefined;
+    const careInput = { ...built.input, runs: WHAT_IF_RUNS };
+    if (careApplied) delete careInput.longTermCare;
+    else careInput.longTermCare = { probability: settings.longTermCare.probabilityPct / 100, meanYears: settings.longTermCare.meanYears, annualCost: settings.longTermCare.annualCost, extraGrowthPct: settings.longTermCare.growthPct };
+    const longTermCare = { applied: careApplied, otherSuccessRate: simulate(careInput, { bands: false }).successRate };
     return {
       result,
       whatIfs: whatIfs(built.input, settings.successTarget, result, WHAT_IF_RUNS, built.view.spending.firstYear),
@@ -385,6 +459,8 @@ export function retirement(db: Db): RetirementResponse {
         whatIfRuns: WHAT_IF_RUNS,
         fixedHorizon: fixedHorizon === null ? null : { age: built.view.endYear - built.input.people.reduce((a, b) => (b.birthYear > a ? b.birthYear : a), 0), successRate: fixedHorizon },
         withoutGuardrails: withoutGuardrails === null ? null : { successRate: withoutGuardrails },
+        ssShortfall,
+        longTermCare,
       },
     };
   });
@@ -429,9 +505,13 @@ export function conversions(db: Db): ConversionsResponse {
   if (!base.built.conversionWindow) return { ready: false, reason: "There are no years between retiring and required minimums to convert in." };
   const traditional = Object.values(base.built.input.balances.traditional).reduce((s, v) => s + v, 0);
   if (traditional <= 0) return { ready: false, reason: "No pre-tax savings to convert." };
-  const options = [0, 12, 22, 24].map((ratePct) => {
+  const runs = [0, 12, 22, 24].map((ratePct) => {
     const built = buildInput(db, { ...settings, rothConversionRatePct: ratePct }).built!;
-    const r = simulate({ ...built.input, runs: WHAT_IF_RUNS }, { bands: false });
+    return { ratePct, r: simulate({ ...built.input, runs: WHAT_IF_RUNS }, { bands: false, perRun: true }) };
+  });
+  const baseRun = runs[0]!.r.perRun!;
+  const options = runs.map(({ ratePct, r }) => {
+    const paired = ratePct === 0 ? null : compareRuns(baseRun, r.perRun!);
     return {
       ratePct,
       successRate: r.successRate,
@@ -439,6 +519,7 @@ export function conversions(db: Db): ConversionsResponse {
       medianLifetimeTax: r.medianLifetimeTax,
       medianMedicareSurcharge: r.medianMedicareSurcharge,
       medianEndAfterTax: r.medianEndAfterTax,
+      paired,
     };
   });
   return { ready: true, window: base.built.conversionWindow, chosen: settings.rothConversionRatePct, options };

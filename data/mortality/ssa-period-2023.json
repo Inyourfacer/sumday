@@ -1,0 +1,8 @@
+{
+  "source": "Social Security Administration, Period Life Table 2023, as used in the 2026 Trustees Report (https://www.ssa.gov/oact/STATS/table4c6.html). Read Nov 20 2026.",
+  "notes": "Number of lives out of 100,000 born, at exact age. A period table applies one year's death rates to everyone, so it leaves out future improvements in mortality; people with higher incomes and better health also tend to live longer than the population average.",
+  "lives": {
+    "male": { "65": 79084, "70": 71916, "75": 62797, "80": 50785, "85": 35529, "90": 19063, "95": 6333, "100": 999, "105": 74 },
+    "female": { "65": 87399, "70": 82374, "75": 75248, "80": 64606, "85": 49469, "90": 30504, "95": 12612, "100": 2758, "105": 256 }
+  }
+}

@@ -142,7 +142,7 @@ export function assumptions(db: Db): AssumptionsResponse {
       label: "How long you live",
       value: `Drawn at random: most common age at death ${retirement.lifeMode}, spread ${retirement.lifeSpread} years`,
       source: set(storedRet, "lifeMode"),
-      note: "A smooth curve, not a life table, with no adjustment for health, sex or family history. The chart still ends at the planning age.",
+      note: "A smooth curve fitted to the SSA 2023 life table for men and women combined, with no adjustment for health, sex or family history; it leaves out future gains in life expectancy. The chart still ends at the planning age.",
       link: "/retirement",
     });
     if (people.length > 1) {
@@ -158,6 +158,50 @@ export function assumptions(db: Db): AssumptionsResponse {
   } else {
     add({ area: "Retirement", label: "Planning horizon", value: `Age ${household.planningHorizonAge} for the youngest adult`, source: "you", note: "Fixed age; lifespans are not drawn at random.", link: "/settings/household" });
   }
+  add({
+    area: "Retirement",
+    label: "Early withdrawals",
+    value: retirement.earlyWithdrawalRules && retirement.taxMode === "brackets"
+      ? `10% penalty on pre-tax money before 60${retirement.ruleOf55 ? " (workplace plans open from 55 if you stop work then)" : ""}; ${retirement.rothBasisPct}% of today's Roth treated as contributions`
+      : "Not modeled",
+    source: set(storedRet, "earlyWithdrawalRules"),
+    note: "Roth contributions come out free; conversions after five years; growth early costs tax and 10%. 60 is used for 59½, so the penalty can run up to a year longer than it should. Exceptions such as 72(t) payments are not modeled, and the Roth rules treat everyone as the youngest adult.",
+    link: "/retirement",
+  });
+  add({
+    area: "Retirement",
+    label: "Social Security for couples",
+    value: retirement.spousalBenefits && people.length === 2 ? "Spousal benefit up to half the other's full benefit, once both have claimed" : "Each person's own benefit only",
+    source: set(storedRet, "spousalBenefits"),
+    note: "A spouse with no estimate entered is treated as having no record of their own. Survivor benefits: the larger of the two. Divorced and widowed-before-claiming cases are not modeled.",
+    link: "/settings/household",
+  });
+  add({
+    area: "Retirement",
+    label: "If Social Security is cut",
+    value: retirement.ssShortfall.enabled ? `Benefits pay ${retirement.ssShortfall.payablePct}% from ${retirement.ssShortfall.startYear}` : "Full benefits for life",
+    source: set(storedRet, "ssShortfall"),
+    note: "The 2026 Trustees Report has the retirement fund running short in late 2032, paying about 78% of scheduled benefits then, and less later. Retirement shows what each choice does.",
+    link: "/retirement",
+  });
+  add({
+    area: "Retirement",
+    label: "Healthcare and other spending",
+    value: `Healthcare ${retirement.healthcareSharePct}% of spending, growing ${retirement.healthcareGrowthPct}% a year above inflation; the rest ${retirement.otherSpendingDriftPct === 0 ? "flat" : `${retirement.otherSpendingDriftPct}% a year`} after retiring`,
+    source: set(storedRet, "healthcareSharePct"),
+    note: "The share and the growth are judgment calls, not measurements of your costs. Retiree spending often drifts down in real terms; enter a negative number to try that.",
+    link: "/retirement",
+  });
+  add({
+    area: "Retirement",
+    label: "Long-term care",
+    value: retirement.longTermCare.enabled
+      ? `${retirement.longTermCare.probabilityPct}% chance each, about ${retirement.longTermCare.meanYears} years at ${usd(retirement.longTermCare.annualCost)} a year at the end of life`
+      : "Not included",
+    source: set(storedRet, "longTermCare"),
+    note: "The chance, length and cost are rough defaults to adjust, not figures checked against current price surveys. Retirement shows the chance with and without it.",
+    link: "/retirement",
+  });
   add({
     area: "Retirement",
     label: "Spending rule",

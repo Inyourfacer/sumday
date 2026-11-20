@@ -88,5 +88,5 @@ it was calculated.
 - Institution-specific adapters (paused).
 - Tax-optimized withdrawal order beyond the fixed one (Roth conversions are done: see DESIGN §11; the
   bracket-based tax model is done).
-- Spousal Social Security benefits before a death (drawn lifespans and survivor spending are done).
+- Social Security trust-fund shortfall as a declining share (a constant share is modeled).
 - Parametric returns as an alternative Monte Carlo mode.

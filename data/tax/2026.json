@@ -211,8 +211,7 @@
     }
   },
   "irmaa": {
-    "year": 2026,
-    "source": "CMS 2026 Part B premium and IRMAA tiers as recalled; NOT verified against cms.gov or ssa.gov (both pages were unreachable). Check before relying on it.",
+    "source": "Part B tiers from SSA POMS HI 01101.020 (effective 12/02/2025, MAGI from 2024 returns) and the $202.90 standard premium on medicare.gov; the CMS fact sheet could not be read, so the tiers are not cross-checked against CMS. Surcharge is the tier's total Part B premium minus $202.90. Part D surcharges are not included. Edges are inclusive upper limits in cents; the top-but-one tier ends one cent short of the 'or more' line.",
     "lookbackYears": 2,
     "partBBase": 20290,
     "tiers": {
@@ -234,7 +233,7 @@
           32460
         ],
         [
-          50000000,
+          49999999,
           44630
         ],
         [
@@ -260,7 +259,7 @@
           32460
         ],
         [
-          75000000,
+          74999999,
           44630
         ],
         [
@@ -274,14 +273,19 @@
           0
         ],
         [
-          39100000,
-          32460
+          39099999,
+          44630
         ],
         [
           null,
           48700
         ]
       ]
-    }
+    },
+    "year": 2026
+  },
+  "payroll": {
+    "socialSecurityWageBase": 18450000,
+    "source": "SSA contribution and benefit base, 2026: $184,500 (https://www.ssa.gov/oact/cola/cbb.html). Employee rates: 6.2% Social Security, 1.45% Medicare; the additional Medicare tax is not modeled."
   }
 }

@@ -91,8 +91,8 @@ describe("retirement", () => {
       ["Sam", 120_000, 75],
     ]);
     expect(i.allocation).toEqual({ stocks: 0.9, bonds: 0.1, cash: 0 });
-    // Spending: rent $2,500 + groceries $800 a month = $39,600 a year.
-    expect(i.spending.firstYear).toBe(3_960_000);
+    // Spending: rent $2,500 + groceries $800 a month = $39,600 a year today; by 2051 the 15% that is healthcare has grown 1% a year above inflation.
+    expect(i.spending.firstYear).toBe(Math.round(3_960_000 * (0.15 * 1.01 ** (2051 - i.startYear) + 0.85)));
     expect(i.spending.categories.map((c) => c.name)).toEqual(["Mortgage / rent", "Groceries"]);
 
     const res = r.result!;
@@ -228,7 +228,7 @@ BND,VANGUARD TOTAL BOND MARKET ETF,800,$78.75,"$63,000.00","$60,000.00"
       },
     });
     // $12,000 housing + $9,600 groceries + $6,000 travel in the first year (age 65).
-    expect(r.inputs!.spending.firstYear).toBe(1_200_000 + 960_000 + 600_000);
+    expect(r.inputs!.spending.firstYear).toBe(Math.round((1_200_000 + 960_000 + 600_000) * (0.15 * 1.01 ** (2051 - r.inputs!.startYear) + 0.85)));
     expect(r.result!.successRate).toBeGreaterThanOrEqual(base.result!.successRate);
     expect(r.inputs!.spending.items).toHaveLength(1);
   });
@@ -271,6 +271,13 @@ BND,VANGUARD TOTAL BOND MARKET ETF,800,$78.75,"$63,000.00","$60,000.00"
     expect(c.window).toEqual({ from: 2051, to: 2060 });
     expect(c.options!.map((o) => o.ratePct)).toEqual([0, 12, 22, 24]);
     expect(c.options![0]!.medianConverted).toBe(0);
+    expect(c.options![0]!.paired).toBeNull();
+    // Every other row is compared with no conversions on the same futures.
+    for (const o of c.options!.slice(1)) {
+      expect(o.paired!.better + o.paired!.worse).toBeLessThanOrEqual(1);
+      expect(o.paired!.saved).toBeGreaterThanOrEqual(0);
+      expect(o.paired!.lost).toBeGreaterThanOrEqual(0);
+    }
     expect(c.options![2]!.medianConverted!).toBeGreaterThanOrEqual(c.options![1]!.medianConverted!);
     // Choosing one puts it in the plan and shows up in the headline's conversion total.
     const r = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { rothConversionRatePct: 22 });
@@ -280,6 +287,50 @@ BND,VANGUARD TOTAL BOND MARKET ETF,800,$78.75,"$63,000.00","$60,000.00"
     // Flat tax mode cannot model them.
     await ok("PUT", "/api/retirement/settings", { taxMode: "flat" });
     expect((await ok<ConversionsResponse>("GET", "/api/retirement/conversions")).ready).toBe(false);
+  });
+
+  it("models early withdrawals, spousal benefits, a Social Security cut, care costs and the size of a shortfall", async () => {
+    await household();
+    const base = await ok<RetirementResponse>("GET", "/api/retirement");
+    expect(base.settings).toMatchObject({ earlyWithdrawalRules: true, ruleOf55: true, rothBasisPct: 100, spousalBenefits: true, healthcareSharePct: 15, healthcareGrowthPct: 1 });
+    expect(base.settings.ssShortfall).toEqual({ enabled: false, startYear: 2033, payablePct: 78 });
+    expect(base.settings.longTermCare.enabled).toBe(false);
+    // Early-withdrawal rules are on in bracket mode; the share of futures paying a penalty is reported.
+    expect(base.result!.penalties).not.toBeNull();
+    expect(base.result!.shortfall.expected).toBeGreaterThanOrEqual(0);
+    // Each optional risk is shown the other way round next to the headline.
+    expect(base.checks!.ssShortfall).toMatchObject({ applied: false, startYear: 2033, payablePct: 78 });
+    expect(base.checks!.ssShortfall!.otherSuccessRate).toBeLessThanOrEqual(base.result!.successRate + 0.03);
+    expect(base.checks!.longTermCare!.applied).toBe(false);
+    expect(base.checks!.longTermCare!.otherSuccessRate).toBeLessThanOrEqual(base.result!.successRate + 0.03);
+
+    const risky = await ok<RetirementResponse>("PUT", "/api/retirement/settings", {
+      ssShortfall: { enabled: true, startYear: 2033, payablePct: 78 },
+      longTermCare: { enabled: true, probabilityPct: 60, meanYears: 3, annualCost: 9_000_000, growthPct: 1 },
+    });
+    expect(risky.checks!.ssShortfall!.applied).toBe(true);
+    expect(risky.checks!.longTermCare!.applied).toBe(true);
+    expect(risky.result!.longTermCare!.share).toBeGreaterThan(0.4);
+    expect(risky.result!.successRate).toBeLessThanOrEqual(base.result!.successRate);
+
+    // Flat taxes leave out the early-withdrawal rules.
+    const flatTax = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { taxMode: "flat" });
+    expect(flatTax.result!.penalties).toBeNull();
+    expect((await call("PUT", "/api/retirement/settings", { rothBasisPct: 120 })).status).toBe(400);
+    expect((await call("PUT", "/api/retirement/settings", { longTermCare: { enabled: true, probabilityPct: 50, meanYears: 3, annualCost: -1, growthPct: 1 } })).status).toBe(400);
+  });
+
+  it("raises retirement spending for healthcare growth and shifts the rest by a yearly drift", async () => {
+    await household();
+    const flatSpending = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { healthcareGrowthPct: 0, otherSpendingDriftPct: 0 });
+    expect(flatSpending.inputs!.spending.firstYear).toBe(3_960_000);
+    const shaped = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { healthcareSharePct: 60, healthcareGrowthPct: 2 });
+    const years = 2051 - shaped.inputs!.startYear;
+    expect(shaped.inputs!.spending.firstYear).toBe(Math.round(3_960_000 * (0.6 * 1.02 ** years + 0.4)));
+    const drifting = await ok<RetirementResponse>("PUT", "/api/retirement/settings", { healthcareSharePct: 0, healthcareGrowthPct: 0, otherSpendingDriftPct: -1 });
+    // Drift starts at retirement, so the first retirement year is unchanged.
+    expect(drifting.inputs!.spending.firstYear).toBe(3_960_000);
+    expect(drifting.result!.successRate).toBeGreaterThanOrEqual(flatSpending.result!.successRate);
   });
 
   it("validates settings", async () => {

@@ -505,6 +505,27 @@ export const retirementSettingsSchema = z.object({
       floorPct: z.number().int().min(40).max(100),
     })
     .optional(),
+  /** Early-withdrawal rules: the 10% penalty before 60, the rule of 55, and how much of today's Roth balance is your own contributions. */
+  earlyWithdrawalRules: z.boolean().optional(),
+  ruleOf55: z.boolean().optional(),
+  rothBasisPct: z.number().int().min(0).max(100).optional(),
+  /** A spouse's benefit of up to half the other's. */
+  spousalBenefits: z.boolean().optional(),
+  /** Social Security pays only part of scheduled benefits from a year on. */
+  ssShortfall: z.object({ enabled: z.boolean(), startYear: z.number().int().min(2026).max(2100), payablePct: z.number().int().min(30).max(100) }).optional(),
+  /** Retirement spending paths: share of spending that is healthcare, its real growth a year, and a real change a year in the rest after retiring. */
+  healthcareSharePct: z.number().int().min(0).max(60).optional(),
+  healthcareGrowthPct: z.number().min(0).max(5).optional(),
+  otherSpendingDriftPct: z.number().min(-3).max(3).optional(),
+  longTermCare: z
+    .object({
+      enabled: z.boolean(),
+      probabilityPct: z.number().int().min(0).max(100),
+      meanYears: z.number().min(1).max(8),
+      annualCost: cents.refine((v) => v >= 0, "Can't be negative."),
+      growthPct: z.number().min(0).max(6),
+    })
+    .optional(),
   /** Roth conversions: fill this tax bracket each year before required minimums start; 0 = none. */
   rothConversionRatePct: z.union([z.literal(0), z.literal(10), z.literal(12), z.literal(22), z.literal(24), z.literal(32), z.literal(35)]).optional(),
   /** Changes promoted from scenarios that live in the retirement plan (savings, spending, one-time amounts, a home). */
