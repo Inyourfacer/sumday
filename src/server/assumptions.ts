@@ -121,7 +121,7 @@ export function assumptions(db: Db): AssumptionsResponse {
       label: "Taxes in retirement",
       value: `Federal brackets for ${household.filingStatus.replace("_", " ")}, state ${retirement.stateTaxPct}%`,
       source: set(storedRet, "taxMode"),
-      note: "Tax tables are for 2026 and treated as indexed to inflation. No extra deduction at 65+, no Medicare surcharges, no tax on dividends while saving. State tax is one flat rate you set.",
+      note: "Tax tables are for 2026 and treated as indexed to inflation. Medicare surcharges (IRMAA) are added from 65, set by income two years back; the tier amounts are not yet checked against cms.gov. No extra deduction at 65+, no tax on dividends while saving. State tax is one flat rate you set.",
       link: "/retirement",
     });
   } else {
@@ -136,7 +136,46 @@ export function assumptions(db: Db): AssumptionsResponse {
     note: "International stocks use the US series. History is short and may not repeat.",
     link: "/retirement",
   });
-  add({ area: "Retirement", label: "Planning horizon", value: `Age ${household.planningHorizonAge} for the youngest adult`, source: "you", note: "Fixed age; no survivor or longevity modeling.", link: "/settings/household" });
+  if (retirement.longevity === "modeled") {
+    add({
+      area: "Retirement",
+      label: "How long you live",
+      value: `Drawn at random: most common age at death ${retirement.lifeMode}, spread ${retirement.lifeSpread} years`,
+      source: set(storedRet, "lifeMode"),
+      note: "A smooth curve, not a life table, with no adjustment for health, sex or family history. The chart still ends at the planning age.",
+      link: "/retirement",
+    });
+    if (people.length > 1) {
+      add({
+        area: "Retirement",
+        label: "After one of you dies",
+        value: `Spending ${retirement.survivorSpendingPct}% of plan; the survivor keeps the larger Social Security benefit and files single the next year`,
+        source: set(storedRet, "survivorSpendingPct"),
+        note: "Pensions stop and pre-tax money moves to the survivor. No life insurance.",
+        link: "/retirement",
+      });
+    }
+  } else {
+    add({ area: "Retirement", label: "Planning horizon", value: `Age ${household.planningHorizonAge} for the youngest adult`, source: "you", note: "Fixed age; lifespans are not drawn at random.", link: "/settings/household" });
+  }
+  add({
+    area: "Retirement",
+    label: "Spending rule",
+    value: retirement.guardrails.enabled
+      ? `Guardrails: cut ${retirement.guardrails.adjustPct}% when the withdrawal rate rises ${retirement.guardrails.upperPct}%, floor ${retirement.guardrails.floorPct}% of plan`
+      : "Same spending every year, whatever markets do",
+    source: set(storedRet, "guardrails"),
+    note: retirement.guardrails.enabled ? "The chance it lasts counts the cuts as acceptable. See how often they happen on Retirement." : "Real people cut back after bad years, so this is conservative.",
+    link: "/retirement",
+  });
+  add({
+    area: "Retirement",
+    label: "Roth conversions",
+    value: retirement.rothConversionRatePct > 0 ? `Fill the ${retirement.rothConversionRatePct}% bracket each year until required minimums start` : "None",
+    source: set(storedRet, "rothConversionRatePct"),
+    note: "Tax on conversions is paid from taxable savings. Not modeled: state-specific rules, ACA subsidy loss, converting while still working.",
+    link: "/retirement",
+  });
   for (const p of people) {
     add({ area: "Retirement", label: `${p.name}: retirement age`, value: String(p.retirementAge), source: "you", link: "/settings/household" });
     const ss = p.socialSecurity;
@@ -169,6 +208,7 @@ export function assumptions(db: Db): AssumptionsResponse {
       { label: "Spend 10% more in retirement", input: dial({ spendingPct: 110 }) },
       { label: "Save $500 a month more", input: dial({ extraMonthly: 50_000 }) },
       { label: "Returns 1 point a year lower", input: { ...dial({}), returnHaircutPct: (built.input.returnHaircutPct ?? 0) + 1 } },
+      ...(built.input.mortality ? [{ label: "Living 5 years longer", input: { ...dial({}), mortality: { ...built.input.mortality, mode: built.input.mortality.mode + 5 } } }] : []),
       built.input.taxes.brackets
         ? { label: "State income tax 3 points higher", input: { ...dial({}), taxes: { ...built.input.taxes, brackets: { ...built.input.taxes.brackets, statePct: built.input.taxes.brackets.statePct + 3 } } } }
         : { label: "Tax on pre-tax withdrawals 5 points higher", input: { ...dial({}), taxes: { ...built.input.taxes, ordinaryPct: built.input.taxes.ordinaryPct + 5 } } },

@@ -489,6 +489,24 @@ export const retirementSettingsSchema = z.object({
   returnHaircutPct: z.number().min(0).max(5).optional(),
   allocationSource: z.enum(["target", "actual"]).optional(),
   includePlanSavings: z.boolean().optional(),
+  /** modeled = each person's death is drawn at random; fixed = plan to the household planning age. */
+  longevity: z.enum(["modeled", "fixed"]).optional(),
+  /** Most common age at death, and how spread out deaths are, in years. */
+  lifeMode: z.number().int().min(70).max(100).optional(),
+  lifeSpread: z.number().int().min(5).max(15).optional(),
+  /** Household spending after one of two dies, percent of the plan. */
+  survivorSpendingPct: z.number().int().min(40).max(100).optional(),
+  guardrails: z
+    .object({
+      enabled: z.boolean(),
+      upperPct: z.number().int().min(5).max(50),
+      lowerPct: z.number().int().min(5).max(50),
+      adjustPct: z.number().int().min(1).max(25),
+      floorPct: z.number().int().min(40).max(100),
+    })
+    .optional(),
+  /** Roth conversions: fill this tax bracket each year before required minimums start; 0 = none. */
+  rothConversionRatePct: z.union([z.literal(0), z.literal(10), z.literal(12), z.literal(22), z.literal(24), z.literal(32), z.literal(35)]).optional(),
   /** Changes promoted from scenarios that live in the retirement plan (savings, spending, one-time amounts, a home). */
   events: z.array(overrideSchema).max(30).optional(),
   spending: z

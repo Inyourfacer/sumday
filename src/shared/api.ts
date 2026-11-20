@@ -231,6 +231,12 @@ export interface RetirementResponse {
     returnHaircutPct: number;
     allocationSource: "target" | "actual";
     includePlanSavings: boolean;
+    longevity: "modeled" | "fixed";
+    lifeMode: number;
+    lifeSpread: number;
+    survivorSpendingPct: number;
+    guardrails: { enabled: boolean; upperPct: number; lowerPct: number; adjustPct: number; floorPct: number };
+    rothConversionRatePct: number;
   };
   inputs: {
     startYear: number;
@@ -270,8 +276,29 @@ export interface RetirementResponse {
     replay: { successRate: number; startYears: number };
     /** Runs behind each what-if answer (the headline uses more). */
     whatIfRuns: number;
+    /** With lifespans drawn: the chance if everyone lives to the planning age instead. */
+    fixedHorizon: { age: number; successRate: number } | null;
+    /** With guardrails on: the chance if spending never changed. */
+    withoutGuardrails: { successRate: number } | null;
   } | null;
-  sources: { returns: string; returnsYears: string; rmd: string; tax: string };
+  sources: { returns: string; returnsYears: string; rmd: string; tax: string; medicare: string | null };
+}
+
+export interface ConversionsResponse {
+  ready: boolean;
+  /** Why it can't be shown yet. */
+  reason?: string;
+  /** Years conversions are tried in, and the tax bracket currently chosen in settings (0 = none). */
+  window?: { from: number; to: number };
+  chosen?: number;
+  options?: {
+    ratePct: number;
+    successRate: number;
+    medianConverted: number | null;
+    medianLifetimeTax: number | null;
+    medianMedicareSurcharge: number | null;
+    medianEndAfterTax: number;
+  }[];
 }
 
 export interface ScenarioView {

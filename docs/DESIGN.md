@@ -375,7 +375,8 @@ while Sumday is open; each alert notifies once.
 - **Assumptions**: how taxes are worked out (federal brackets by default,
   or two flat rates), a flat state rate, success target (default 85%),
   planning horizon (Settings → Household, default 95 for the youngest
-  adult), a returns stress (points taken off every year), and whether to model
+  adult, used for the chart and fixed-age mode), lifespans drawn at random
+  or fixed, survivor spending, spending guardrails, a returns stress (points taken off every year), and whether to model
   the target mix (rebalanced yearly) or the mix actually held today.
 
 ### 11.2 Monte Carlo engine
@@ -410,10 +411,49 @@ while Sumday is open; each alert notifies once.
 
 ### 11.3 What it does *not* do (yet)
 
-Roth conversion planning, IRMAA, spousal or survivor Social Security
-benefits, tax-optimized withdrawal order, tax drag on dividends while saving,
-the extra deduction at 65+, state rules beyond one flat rate, or a
-mortality-aware horizon.
+Spousal Social Security benefits before a death, tax-optimized withdrawal
+order beyond the fixed one, tax drag on dividends while saving, the extra
+deduction at 65+, health-insurance subsidy cliffs, long-term care costs, or
+state rules beyond one flat rate.
+
+**Lifespans.** By default each simulated future draws when each person dies
+from a Gompertz curve (`src/engine/retire/longevity.ts`): the most common age
+at death (default 88) and a spread (default 10 years) set the curve; it is a
+smooth approximation, not a life table, and does not know sex, health or
+family history. A future lasts until the last death, so the answer is the
+chance the money outlives *the people*, not the chance it reaches a fixed
+age. After the first death of two: spending drops to a set share of the plan
+(default 75%), the survivor receives the larger Social Security benefit,
+pensions stop (no survivor option modeled), pre-tax balances move to the
+survivor and taxes switch to single filing the next year. The chart and the
+"at the end" figures stay at the household planning age; a fixed-age
+comparison is shown beside the headline. "Fixed planning age" in settings
+restores the old behavior.
+
+**Spending guardrails** (optional). Once retired, each year compares the share
+of the portfolio withdrawn (spending minus Social Security and pensions) with
+where it started. If it has risen by more than the upper limit (default 20%),
+spending is cut by a step (default 10%, never below 75% of the plan); if it
+falls below the lower limit and spending was cut earlier, spending is
+restored, never above the plan. The result shows how often cuts happen and
+how deep, and the success rate with and without them, because a higher
+success rate that comes from cutting spending is a different promise.
+
+**Roth conversions** (bracket tax mode). From retirement until required
+minimums begin for the oldest person, each year converts as much pre-tax money
+as keeps taxable income inside a chosen bracket (12, 22 or 24%), paying the
+tax from taxable savings (from the conversion itself if that runs out). The
+Retirement page compares no conversions with each bracket on the same futures:
+chance it lasts, total converted, income tax over retirement, Medicare
+surcharges and end value after a 22% heirs' tax on pre-tax money. Conversions
+are not tried while still working, and ACA subsidy loss and state-specific
+rules are not counted.
+
+**Medicare surcharges** (bracket tax mode). From 65 each person on Medicare
+pays an income-related Part B surcharge set by income two years earlier
+(`irmaa` in `data/tax/<year>.json`, thresholds and amounts treated as indexed).
+Part D surcharges are not included. The 2026 tier amounts have not been
+checked against cms.gov or ssa.gov.
 
 **Taxes.** In bracket mode (the default) each retirement year is taxed from
 `data/tax/<year>.json`: the standard deduction, ordinary brackets, 0/15/20%
